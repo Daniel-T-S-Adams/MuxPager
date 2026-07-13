@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+
+# Park the current session so it stays in the switcher but drops out of the toolbar.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/session-status.sh
+source "$SCRIPT_DIR/lib/session-status.sh"
+mkdir -p "$PARKED_DIR"
+
+current_session=$(tmux display-message -p "#{session_name}")
+
+if ! has_agent_in_session "$current_session" && ! is_ssh_session "$current_session"; then
+    if [ ! -f "$STATUS_DIR/${current_session}.status" ] && [ ! -f "$STATUS_DIR/${current_session}-remote.status" ]; then
+        tmux display-message "Session $current_session has no agent state to park"
+        exit 1
+    fi
+fi
+
+NEXT_DONE_SCRIPT="$SCRIPT_DIR/next-done-project.sh"
+if [ -f "$NEXT_DONE_SCRIPT" ]; then
+    bash "$NEXT_DONE_SCRIPT" --exclude "$current_session" "S" >/dev/null 2>&1 || true
+fi
+
+rm -f "$WAIT_DIR/$current_session.wait"
+: > "$PARKED_DIR/$current_session.parked"
+
+if is_ssh_session "$current_session"; then
+    echo "parked" > "$STATUS_DIR/${current_session}-remote.status"
+else
+    echo "parked" > "$STATUS_DIR/${current_session}.status"
+fi
+
+# Create per-pane parked markers and status so pane-level state stays consistent
+PANE_DIR="$STATUS_DIR/panes"
+mkdir -p "$PANE_DIR"
+while IFS= read -r pane_id; do
+    [ -z "$pane_id" ] && continue
+    : > "$PARKED_DIR/${current_session}_${pane_id}.parked"
+    echo "parked" > "$PANE_DIR/${current_session}_${pane_id}.status"
+    rm -f "$WAIT_DIR/${current_session}_${pane_id}.wait" 2>/dev/null
+done < <(tmux list-panes -t "$current_session" -F '#{pane_id}' 2>/dev/null)
+
+tmux display-message "Session $current_session parked for later"
