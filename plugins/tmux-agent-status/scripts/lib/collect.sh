@@ -473,7 +473,9 @@ collect_data() {
     }
 
     # ── INBOX ────────────────────────────────────────────────────
-    if [[ "$SIDEBAR_MODE" != "agents" ]]; then
+    # Customization: `set -g @agent-sidebar-inbox off` suppresses the INBOX
+    # group entirely, leaving just the SESSIONS tree.
+    if [[ "$SIDEBAR_MODE" != "agents" && "$(tmux show-option -gqv @agent-sidebar-inbox)" != "off" ]]; then
         local inbox=()
         for sname in "${all_sessions[@]}"; do
             session_is_fully_parked "$sname" && continue
