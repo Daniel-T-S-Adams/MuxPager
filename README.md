@@ -59,9 +59,18 @@ like any git merge, then committed.
   every navigation event so the sidebar re-appears if it self-closes.
 - **`prefix + C`** — prompt for a name and create a new *detached* background
   session (does not switch to it).
-- **`?` icon for "asking"** — when Claude asks for permission or is waiting on
-  your input (the `Notification` hook), the pane/session shows a red `?` instead
-  of the green `✓`. Multi-agent session rows show a `?N` count. (Upstream mapped
-  `Notification` to `done`; here it emits a distinct `ask` state — see
-  `hooks/better-hook.sh`, `scripts/sidebar.sh`, `scripts/lib/collect.sh`.)
+- **Reworked status icons** — the sidebar icon answers "is a Claude running here,
+  and is it busy?":
+  - 🟡 yellow spinner — Claude is actively thinking/answering (`working`).
+  - 🔴 red `?` — a Claude is waiting on you: either asking a question/permission
+    (`ask`) **or** finished and idle at the prompt (`done`). Multi-agent rows show
+    a `?N` count.
+  - 🟢 green `✓` — no Claude in the pane (plain shell / no agent).
+  - `⏸` (snooze/wait) and `P` (parked) are kept as-is.
+  This required emitting a distinct `ask` state (`Notification` hook) and, because
+  Claude Code fires **no hook on ESC-interrupt**, an interrupt-reconciliation pass
+  in the collector: a pane stuck at `working` that no longer shows Claude's
+  "esc to interrupt" footer is flipped to `done` (→ red `?`). See
+  `hooks/better-hook.sh`, `scripts/sidebar.sh`, `scripts/lib/collect.sh`
+  (`_reconcile_interrupted`).
 - **No sidebar INBOX** — `@agent-sidebar-inbox off` leaves just the SESSIONS tree.

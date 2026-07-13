@@ -489,32 +489,29 @@ render() {
         _set_icon_color() {
             case "$1" in
                 working) _ic="$YEL"; _icon="${SPINNER_FRAMES[$SPINNER_TICK]}" ;;
-                done)    _ic="$GRN"; _icon="✓" ;;
-                ask)     _ic="$RED"; _icon="?" ;;
+                # A live Claude that is finished/idle or asking = waiting on you.
+                done|ask) _ic="$RED"; _icon="?" ;;
                 wait)    _ic="$CYN"; _icon="⏸" ;;
                 parked)  _ic="$GRY"; _icon="P" ;;
-                *)       _ic="$GRY"; _icon="·" ;;
+                # No live Claude here (plain shell / no agent) = green tick.
+                *)       _ic="$GRN"; _icon="✓" ;;
             esac
         }
 
         # Build compact multi-status string from pane counts "w:d:wt:a"
         _render_counts() {
             IFS=: read -r _cw _cd _cwt _ca <<< "$1"
-            _ca="${_ca:-0}"
+            _cd="${_cd:-0}"; _ca="${_ca:-0}"
+            local _cidle=$(( _cd + _ca ))   # finished + asking = waiting on you
             _count_str="" ; _count_vlen=0
             if (( _cw > 0 )); then
                 _count_str+="${YEL}${SPINNER_FRAMES[$SPINNER_TICK]}${_cw}${RST}"
                 ((_count_vlen += ${#_cw} + 1))
             fi
-            if (( _ca > 0 )); then
+            if (( _cidle > 0 )); then
                 (( _count_vlen > 0 )) && { _count_str+=" "; ((_count_vlen++)); }
-                _count_str+="${RED}?${_ca}${RST}"
-                ((_count_vlen += ${#_ca} + 1))
-            fi
-            if (( _cd > 0 )); then
-                (( _count_vlen > 0 )) && { _count_str+=" "; ((_count_vlen++)); }
-                _count_str+="${GRN}✓${_cd}${RST}"
-                ((_count_vlen += ${#_cd} + 1))
+                _count_str+="${RED}?${_cidle}${RST}"
+                ((_count_vlen += ${#_cidle} + 1))
             fi
             if (( _cwt > 0 )); then
                 (( _count_vlen > 0 )) && { _count_str+=" "; ((_count_vlen++)); }

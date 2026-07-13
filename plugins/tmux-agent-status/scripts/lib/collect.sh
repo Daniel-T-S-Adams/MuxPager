@@ -69,7 +69,33 @@ _sidebar_mode() {
 }
 
 # ─── Main collection ──────────────────────────────────────────────
+# Claude Code fires NO hook when a turn is interrupted with ESC, so a cancelled
+# agent's pane status is stuck at "working". Detect that: a Claude pane still
+# marked "working" but no longer showing Claude's "esc to interrupt" footer was
+# interrupted (or finished without a Stop) -> mark it done, so it renders as the
+# "waiting on you" icon instead of a stuck spinner. A short grace skips
+# freshly-set "working" files to avoid a false flip in the split second between
+# prompt submit and the footer appearing.
+_reconcile_interrupted() {
+    local pane_dir="$STATUS_DIR/panes"
+    local now grace f
+    now=$(date +%s); grace=3
+    for f in "$pane_dir"/*.status; do
+        [ -f "$f" ] || continue
+        [ "$(<"$f")" = "working" ] || continue
+        local base="${f##*/}"; base="${base%.status}"
+        [ "$(cat "$pane_dir/${base}.agent" 2>/dev/null)" = "claude" ] || continue
+        local mt; mt=$(stat -c %Y "$f" 2>/dev/null) || continue
+        (( now - mt < grace )) && continue
+        local paneid="${base##*_}" session="${base%_*}"
+        tmux capture-pane -p -t "$paneid" 2>/dev/null | grep -qi 'esc to interrupt' && continue
+        echo done > "$f"
+        recompute_session_status "$session"
+    done
+}
+
 collect_data() {
+    _reconcile_interrupted
     expire_wait_timers >/dev/null
 
     local SIDEBAR_MODE
