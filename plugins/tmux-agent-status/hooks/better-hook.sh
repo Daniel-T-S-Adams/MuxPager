@@ -59,7 +59,10 @@ set_status() {
         echo "$requested_status" > "$pane_file"
         echo "claude" > "$agent_file"
 
+        # Roll the session status up from its panes by priority:
+        #   working > wait > ask > done   (matches status_priority()).
         session_status="done"
+        local best_pri=2
         local existing_pane_file=""
         for existing_pane_file in "$PANE_DIR/${tmux_session}_"*.status; do
             [ -f "$existing_pane_file" ] || continue
@@ -69,12 +72,14 @@ set_status() {
             case "$pane_status" in
                 working)
                     session_status="working"
+                    best_pri=5
                     break
                     ;;
                 wait)
-                    if [ "$session_status" != "working" ]; then
-                        session_status="wait"
-                    fi
+                    if [ "$best_pri" -lt 4 ]; then session_status="wait"; best_pri=4; fi
+                    ;;
+                ask)
+                    if [ "$best_pri" -lt 3 ]; then session_status="ask"; best_pri=3; fi
                     ;;
             esac
         done
@@ -175,8 +180,9 @@ case "$HOOK_TYPE" in
         mark_refresh
         ;;
     Notification)
-        # Claude is waiting for user input.
-        set_status "$TMUX_SESSION" "done"
+        # Claude is asking for permission or waiting for user input -> "ask",
+        # which the sidebar renders as a "?" so it's distinct from "done".
+        set_status "$TMUX_SESSION" "ask"
         mark_refresh
 
         SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

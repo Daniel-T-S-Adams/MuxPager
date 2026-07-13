@@ -59,3 +59,9 @@ like any git merge, then committed.
   every navigation event so the sidebar re-appears if it self-closes.
 - **`prefix + C`** — prompt for a name and create a new *detached* background
   session (does not switch to it).
+- **`?` icon for "asking"** — when Claude asks for permission or is waiting on
+  your input (the `Notification` hook), the pane/session shows a red `?` instead
+  of the green `✓`. Multi-agent session rows show a `?N` count. (Upstream mapped
+  `Notification` to `done`; here it emits a distinct `ask` state — see
+  `hooks/better-hook.sh`, `scripts/sidebar.sh`, `scripts/lib/collect.sh`.)
+- **No sidebar INBOX** — `@agent-sidebar-inbox off` leaves just the SESSIONS tree.

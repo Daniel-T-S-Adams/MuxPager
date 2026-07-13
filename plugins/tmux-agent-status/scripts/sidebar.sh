@@ -170,6 +170,7 @@ YEL=$'\033[33m'
 GRN=$'\033[32m'
 MAG=$'\033[35m'
 CYN=$'\033[36m'
+RED=$'\033[1;31m'
 GRY=$'\033[90m'
 WHT=$'\033[97m'
 BYEL=$'\033[1;33m'
@@ -301,11 +302,11 @@ render() {
         local st="${rest%%|*}"
         local counts="${PANE_COUNTS[$sname]:-}"
         if [[ -n "$counts" ]]; then
-            IFS=: read -r _pw _pd _pwt <<< "$counts"
-            ((nw += _pw)); ((nd += _pd)); ((nwt += _pwt))
+            IFS=: read -r _pw _pd _pwt _pa <<< "$counts"
+            ((nw += _pw)); ((nd += _pd + ${_pa:-0})); ((nwt += _pwt))
         else
             case "$st" in
-                working) ((nw++)) ;; done) ((nd++)) ;; wait) ((nwt++)) ;;
+                working) ((nw++)) ;; done|ask) ((nd++)) ;; wait) ((nwt++)) ;;
             esac
         fi
     done
@@ -489,19 +490,26 @@ render() {
             case "$1" in
                 working) _ic="$YEL"; _icon="${SPINNER_FRAMES[$SPINNER_TICK]}" ;;
                 done)    _ic="$GRN"; _icon="✓" ;;
+                ask)     _ic="$RED"; _icon="?" ;;
                 wait)    _ic="$CYN"; _icon="⏸" ;;
                 parked)  _ic="$GRY"; _icon="P" ;;
                 *)       _ic="$GRY"; _icon="·" ;;
             esac
         }
 
-        # Build compact multi-status string from pane counts "w:d:wt"
+        # Build compact multi-status string from pane counts "w:d:wt:a"
         _render_counts() {
-            IFS=: read -r _cw _cd _cwt <<< "$1"
+            IFS=: read -r _cw _cd _cwt _ca <<< "$1"
+            _ca="${_ca:-0}"
             _count_str="" ; _count_vlen=0
             if (( _cw > 0 )); then
                 _count_str+="${YEL}${SPINNER_FRAMES[$SPINNER_TICK]}${_cw}${RST}"
                 ((_count_vlen += ${#_cw} + 1))
+            fi
+            if (( _ca > 0 )); then
+                (( _count_vlen > 0 )) && { _count_str+=" "; ((_count_vlen++)); }
+                _count_str+="${RED}?${_ca}${RST}"
+                ((_count_vlen += ${#_ca} + 1))
             fi
             if (( _cd > 0 )); then
                 (( _count_vlen > 0 )) && { _count_str+=" "; ((_count_vlen++)); }
@@ -533,7 +541,7 @@ render() {
             if [[ -n "$counts" ]]; then
                 _render_counts "$counts"
                 icon_str="$_count_str"; icon_vlen=$_count_vlen
-                IFS=: read -r _cw _cd _cwt <<< "$counts"
+                IFS=: read -r _cw _cd _cwt _ca <<< "$counts"
                 (( _cw > 0 )) && has_working_spinner=1
             else
                 local _icon _ic; _set_icon_color "$state"
@@ -596,7 +604,7 @@ render() {
             if [[ -n "$counts" ]]; then
                 _render_counts "$counts"
                 icon_str="$_count_str"; icon_vlen=$_count_vlen
-                IFS=: read -r _cw _cd _cwt <<< "$counts"
+                IFS=: read -r _cw _cd _cwt _ca <<< "$counts"
                 (( _cw > 0 )) && has_working_spinner=1
             else
                 local _icon _ic; _set_icon_color "$state"

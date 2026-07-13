@@ -303,7 +303,7 @@ collect_data() {
     PANE_COUNTS=()
     for sname in "${!sess_agents[@]}"; do
         local agents="${sess_agents[$sname]}"
-        local pw=0 pd=0 pwt=0 count=0
+        local pw=0 pd=0 pwt=0 pa=0 count=0
         local seen=""
         for ap in $agents; do
             local pid="${ap%%:*}"
@@ -311,11 +311,11 @@ collect_data() {
             seen+="$pid "
             local rest="${ap#*:}"; local ps="${rest#*:}"
             case "$ps" in
-                working) ((pw++)) ;; done|ask) ((pd++)) ;; wait) ((pwt++)) ;;
+                working) ((pw++)) ;; done) ((pd++)) ;; ask) ((pa++)) ;; wait) ((pwt++)) ;;
             esac
             ((count++))
         done
-        (( count > 1 )) && PANE_COUNTS[$sname]="${pw}:${pd}:${pwt}"
+        (( count > 1 )) && PANE_COUNTS[$sname]="${pw}:${pd}:${pwt}:${pa}"
     done
 
     # ── 6. Collapse single-worktree parents ────────────────────
