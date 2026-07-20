@@ -1,0 +1,44 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/my-tmux/plugins/tmux-agent-status/hooks/better-hook.sh\" Notification"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/my-tmux/plugins/tmux-agent-status/hooks/better-hook.sh\" UserPromptSubmit"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/my-tmux/plugins/tmux-agent-status/hooks/better-hook.sh\" PreToolUse"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/my-tmux/plugins/tmux-agent-status/hooks/better-hook.sh\" Stop"
+          }
+        ]
+      }
+    ]
+  }
+}

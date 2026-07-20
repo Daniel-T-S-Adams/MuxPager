@@ -22,7 +22,7 @@ Demo video: [`demo/full.mp4`](demo/full.mp4)
 | Agent | Integration | Status |
 |-------|-------------|--------|
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Hook-based via `hooks/better-hook.sh` | Stable |
-| [Codex CLI](https://github.com/openai/codex) | Hook-based via `hooks/codex-hook.sh` | Stable in plugin, hooks still experimental upstream |
+| [Codex CLI](https://github.com/openai/codex) | Hook-based via `hooks/codex-hook.sh` | Stable |
 | [Devin CLI](https://docs.devin.ai/cli) | Hook-based via `hooks/devin-hook.sh` (local CLI only) | Stable in plugin |
 | Custom (Aider, Cline, Copilot CLI, etc.) | Status files or collector extensions | Stable |
 
@@ -66,7 +66,7 @@ Add hooks to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "~/.config/tmux/plugins/tmux-agent-status/hooks/better-hook.sh UserPromptSubmit"
+            "command": "~/my-tmux/plugins/tmux-agent-status/hooks/better-hook.sh UserPromptSubmit"
           }
         ]
       }
@@ -76,7 +76,7 @@ Add hooks to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "~/.config/tmux/plugins/tmux-agent-status/hooks/better-hook.sh PreToolUse"
+            "command": "~/my-tmux/plugins/tmux-agent-status/hooks/better-hook.sh PreToolUse"
           }
         ]
       }
@@ -86,7 +86,7 @@ Add hooks to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "~/.config/tmux/plugins/tmux-agent-status/hooks/better-hook.sh Stop"
+            "command": "~/my-tmux/plugins/tmux-agent-status/hooks/better-hook.sh Stop"
           }
         ]
       }
@@ -96,7 +96,7 @@ Add hooks to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "~/.config/tmux/plugins/tmux-agent-status/hooks/better-hook.sh Notification"
+            "command": "~/my-tmux/plugins/tmux-agent-status/hooks/better-hook.sh Notification"
           }
         ]
       }
@@ -131,7 +131,7 @@ To enable Codex tracking globally, add `~/.codex/hooks.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.config/tmux/plugins/tmux-agent-status/hooks/codex-hook.sh SessionStart"
+            "command": "bash ~/my-tmux/plugins/tmux-agent-status/hooks/codex-hook.sh SessionStart"
           }
         ]
       }
@@ -141,7 +141,7 @@ To enable Codex tracking globally, add `~/.codex/hooks.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.config/tmux/plugins/tmux-agent-status/hooks/codex-hook.sh UserPromptSubmit"
+            "command": "bash ~/my-tmux/plugins/tmux-agent-status/hooks/codex-hook.sh UserPromptSubmit"
           }
         ]
       }
@@ -152,7 +152,7 @@ To enable Codex tracking globally, add `~/.codex/hooks.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.config/tmux/plugins/tmux-agent-status/hooks/codex-hook.sh PreToolUse"
+            "command": "bash ~/my-tmux/plugins/tmux-agent-status/hooks/codex-hook.sh PreToolUse"
           }
         ]
       }
@@ -162,7 +162,7 @@ To enable Codex tracking globally, add `~/.codex/hooks.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.config/tmux/plugins/tmux-agent-status/hooks/codex-hook.sh Stop"
+            "command": "bash ~/my-tmux/plugins/tmux-agent-status/hooks/codex-hook.sh Stop"
           }
         ]
       }
@@ -191,7 +191,7 @@ Add hooks to `~/.config/devin/config.json`
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.config/tmux/plugins/tmux-agent-status/hooks/devin-hook.sh SessionStart"
+            "command": "bash ~/my-tmux/plugins/tmux-agent-status/hooks/devin-hook.sh SessionStart"
           }
         ]
       }
@@ -201,7 +201,7 @@ Add hooks to `~/.config/devin/config.json`
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.config/tmux/plugins/tmux-agent-status/hooks/devin-hook.sh UserPromptSubmit"
+            "command": "bash ~/my-tmux/plugins/tmux-agent-status/hooks/devin-hook.sh UserPromptSubmit"
           }
         ]
       }
@@ -211,7 +211,7 @@ Add hooks to `~/.config/devin/config.json`
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.config/tmux/plugins/tmux-agent-status/hooks/devin-hook.sh PreToolUse"
+            "command": "bash ~/my-tmux/plugins/tmux-agent-status/hooks/devin-hook.sh PreToolUse"
           }
         ]
       }
@@ -221,7 +221,7 @@ Add hooks to `~/.config/devin/config.json`
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.config/tmux/plugins/tmux-agent-status/hooks/devin-hook.sh PostToolUse"
+            "command": "bash ~/my-tmux/plugins/tmux-agent-status/hooks/devin-hook.sh PostToolUse"
           }
         ]
       }
@@ -231,7 +231,7 @@ Add hooks to `~/.config/devin/config.json`
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.config/tmux/plugins/tmux-agent-status/hooks/devin-hook.sh Stop"
+            "command": "bash ~/my-tmux/plugins/tmux-agent-status/hooks/devin-hook.sh Stop"
           }
         ]
       }
@@ -343,7 +343,7 @@ Options: `chime` (default), `bell`, `fanfare`, `frog`, `speech`, `none`.
 Launch parallel AI coding sessions with isolated git worktrees:
 
 ```bash
-bash ~/.config/tmux/plugins/tmux-agent-status/scripts/deploy-sessions.sh manifest.json
+bash ~/my-tmux/plugins/tmux-agent-status/scripts/deploy-sessions.sh manifest.json
 ```
 
 Each session gets a `deploy/<name>` branch, and the plugin tracks the spawned sessions automatically.

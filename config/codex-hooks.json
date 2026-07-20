@@ -1,0 +1,46 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/my-tmux/plugins/tmux-agent-status/hooks/codex-hook.sh\" SessionStart"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/my-tmux/plugins/tmux-agent-status/hooks/codex-hook.sh\" UserPromptSubmit"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/my-tmux/plugins/tmux-agent-status/hooks/codex-hook.sh\" PreToolUse"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/my-tmux/plugins/tmux-agent-status/hooks/codex-hook.sh\" Stop"
+          }
+        ]
+      }
+    ]
+  }
+}
