@@ -2,8 +2,8 @@
 
 # Codex hook for tmux-agent-status.
 # Hook events are passed as the first argument by the configured Codex command
-# hook. The JSON payload is read from stdin and ignored here because
-# tmux-agent-status only needs the event name to update session state.
+# hook. The JSON payload also contains the exact final assistant response for a
+# Stop event; cache that response for phone/notification integrations.
 
 STATUS_DIR="$HOME/.cache/tmux-agent-status"
 WAIT_DIR="$STATUS_DIR/wait"
@@ -13,8 +13,12 @@ REFRESH_FILE="$STATUS_DIR/.sidebar-refresh"
 mkdir -p "$STATUS_DIR" "$WAIT_DIR" "$PARKED_DIR" "$PANE_DIR"
 [ -f "$REFRESH_FILE" ] || : > "$REFRESH_FILE"
 
-# Drain the JSON payload from stdin so Codex can close the hook cleanly.
-cat >/dev/null 2>&1 || true
+# Read the JSON payload from stdin so Codex can close the hook cleanly.
+HOOK_JSON="$(cat 2>/dev/null || true)"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=cache-last-message.sh
+source "$SCRIPT_DIR/cache-last-message.sh"
 
 in_remote_session() {
     [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]
@@ -134,6 +138,7 @@ case "$HOOK_TYPE" in
         mark_refresh
         ;;
     Stop)
+        cache_last_assistant_message "$HOOK_JSON" "$TMUX_SESSION" "${TMUX_PANE:-}"
         set_status "$TMUX_SESSION" "done"
         mark_refresh
         ;;

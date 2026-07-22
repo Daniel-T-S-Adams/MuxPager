@@ -49,8 +49,14 @@ assert_eq() {
 run_hook() {
     local hook_name="$1"
     local pane_id="$2"
+    local payload=""
+    if [ "$#" -ge 3 ]; then
+        payload="$3"
+    else
+        printf -v payload '{"hook_event_name":"%s"}' "$hook_name"
+    fi
 
-    printf '{"hook_event_name":"%s"}\n' "$hook_name" | \
+    printf '%s\n' "$payload" | \
         PATH="$FAKE_BIN:$PATH" \
         HOME="$TEST_HOME" \
         TMUX="/tmp/tmux-test,4242,0" \
@@ -80,7 +86,7 @@ fi
 echo "working" > "$PANE_DIR/mixed-hooks_%13.status"
 echo "codex" > "$PANE_DIR/mixed-hooks_%13.agent"
 
-run_hook "Stop" "%3"
+run_hook "Stop" "%3" '{"hook_event_name":"Stop","last_assistant_message":"Exact Claude response."}'
 stop_refresh=$(<"$REFRESH_FILE")
 if [ "$stop_refresh" = "$prompt_refresh" ]; then
     echo "Assertion failed: consecutive Claude hooks should write distinct refresh tokens" >&2
@@ -92,6 +98,8 @@ claude_agent="$(cat "$PANE_DIR/mixed-hooks_%3.agent")"
 assert_eq "working" "$session_status" "Claude finishing in one pane must not mark the whole mixed session done"
 assert_eq "done" "$claude_status" "Claude Stop should mark the current pane done"
 assert_eq "claude" "$claude_agent" "Claude hook should persist the pane agent name"
+claude_message="$(cat "$PANE_DIR/mixed-hooks_%3.last-message")"
+assert_eq "Exact Claude response." "$claude_message" "Claude Stop should cache the exact assistant response"
 
 echo "done" > "$PANE_DIR/mixed-hooks_%13.status"
 run_hook "Stop" "%3"

@@ -48,8 +48,14 @@ assert_eq() {
 
 run_hook() {
     local hook_name="$1"
+    local payload=""
+    if [ "$#" -ge 2 ]; then
+        payload="$2"
+    else
+        printf -v payload '{"hook_event_name":"%s"}' "$hook_name"
+    fi
 
-    printf '{"hook_event_name":"%s"}\n' "$hook_name" | \
+    printf '%s\n' "$payload" | \
         PATH="$FAKE_BIN:$PATH" \
         HOME="$TEST_HOME" \
         TMUX="/tmp/tmux-test,4242,0" \
@@ -133,10 +139,12 @@ if [ ! -f "$PARKED_DIR/codex-hooks.parked" ]; then
 fi
 
 rm -f "$PARKED_DIR/codex-hooks.parked"
-run_hook "Stop"
+run_hook "Stop" '{"hook_event_name":"Stop","last_assistant_message":"Exact Codex response.\nSecond line."}'
 session_status="$(cat "$STATUS_DIR/codex-hooks.status")"
 pane_status="$(cat "$PANE_DIR/codex-hooks_%9.status")"
 assert_eq "done" "$session_status" "Stop should mark the session done"
 assert_eq "done" "$pane_status" "Stop should mark the pane done"
+last_message="$(cat "$PANE_DIR/codex-hooks_%9.last-message")"
+assert_eq $'Exact Codex response.\nSecond line.' "$last_message" "Codex Stop should cache the exact assistant response"
 
 echo "Codex hook lifecycle checks passed"

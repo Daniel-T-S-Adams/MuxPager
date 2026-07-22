@@ -11,6 +11,8 @@ network fetch at startup.
 config/codex-hooks.json        # global Codex lifecycle hook configuration
 config/claude-hooks.json       # Claude Code hook configuration to merge
 scripts/agent-sidebar-ensure.sh# keeps the agent-status sidebar permanent
+scripts/tmux-telegram-bridge.py# private phone inbox for live agent panes
+systemd/                      # persistent Telegram bridge user service
 plugins/tmux-agent-status/     # VENDORED plugin, tracked via git subtree
 ```
 
@@ -47,6 +49,70 @@ tracking never depends on another plugin checkout.
 
 > The config references `~/my-tmux` by absolute path. If you clone elsewhere,
 > update the paths in `.tmux.conf` (the sidebar script itself is path-portable).
+
+## Telegram agent inbox
+
+The optional Telegram bridge provides a private, single-message inbox for the
+live Codex and Claude panes on this tmux server:
+
+- `/agents` displays one inline button per live agent pane.
+- Tapping an agent shows its latest response. `Previous`, `Next`, and `Refresh`
+  let you click through the panes without filling the chat with old output.
+- Ordinary Telegram text is pasted literally into the selected pane, followed
+  by Enter. `/send TEXT` is an explicit equivalent; other slash commands such
+  as `/review` are passed through to the selected agent.
+- When an agent finishes, the same inbox message is updated to show that pane.
+
+Codex and Claude `Stop` hooks expose `last_assistant_message`; the status hooks
+cache that exact response per pane. While an agent is still working—or until an
+existing agent completes its first turn after installation—the bridge falls
+back to the latest visible pane output.
+
+The bridge only accepts a private chat from the configured Telegram user ID. It
+does not offer shell execution: incoming text goes through a private tmux paste
+buffer, and the pane ID is revalidated immediately before the paste.
+
+### Set up the bot
+
+1. In Telegram, use `@BotFather` to create a private bot and copy its token.
+2. Install the local configuration and user service:
+
+   ```bash
+   ~/my-tmux/scripts/setup-telegram-bridge.sh
+   ```
+
+3. Edit `~/.config/tmux-telegram-bridge/env`, set
+   `TMUX_TELEGRAM_BOT_TOKEN`, and start the service in safe pairing mode:
+
+   ```bash
+   systemctl --user enable --now tmux-telegram-bridge
+   ```
+
+4. Send `/id` to the bot. Put the returned user ID in
+   `TMUX_TELEGRAM_ALLOWED_USER_ID`, then reload the private configuration:
+
+   ```bash
+   systemctl --user restart tmux-telegram-bridge
+   ```
+
+5. Send `/agents`. The bot now shows only the live agent panes detected by the
+   same process-liveness rules as the sidebar and switcher.
+
+The real token and user ID live outside this repository in a mode-`0600` file.
+Never add them to Git. If this machine must keep the bridge running after every
+login session closes, enable the user service manager persistently once:
+
+```bash
+sudo loginctl enable-linger "$(id -un)"
+```
+
+Useful diagnostics:
+
+```bash
+~/my-tmux/scripts/tmux-telegram-bridge.py --check
+systemctl --user status tmux-telegram-bridge
+journalctl --user -u tmux-telegram-bridge -f
+```
 
 ## Customize the plugin
 

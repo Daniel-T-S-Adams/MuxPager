@@ -1,0 +1,22 @@
+[Unit]
+Description=Private Telegram inbox for tmux agents
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/tmux-telegram-bridge/env
+ExecStart=%h/my-tmux/scripts/tmux-telegram-bridge.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateDevices=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+
+[Install]
+WantedBy=default.target
+

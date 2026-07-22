@@ -15,6 +15,10 @@ mkdir -p "$STATUS_DIR" "$WAIT_DIR" "$PARKED_DIR" "$PANE_DIR"
 # carries a `background_tasks` array that we inspect below.
 HOOK_JSON="$(cat 2>/dev/null || true)"
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=cache-last-message.sh
+source "$SCRIPT_DIR/cache-last-message.sh"
+
 in_remote_session() {
     [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]
 }
@@ -172,6 +176,7 @@ case "$HOOK_TYPE" in
         # finishing doesn't mean the main agent is done). If the turn ended
         # while a background task is still running, the agent isn't idle yet —
         # keep it working until a later Stop reports the task finished.
+        cache_last_assistant_message "$HOOK_JSON" "$TMUX_SESSION" "${TMUX_PANE:-}"
         if has_running_background_task "$HOOK_JSON"; then
             set_status "$TMUX_SESSION" "working"
         else
@@ -185,7 +190,6 @@ case "$HOOK_TYPE" in
         set_status "$TMUX_SESSION" "ask"
         mark_refresh
 
-        SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
         "$SCRIPT_DIR/../scripts/play-sound.sh" 2>/dev/null &
         ;;
 esac
