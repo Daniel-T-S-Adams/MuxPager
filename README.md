@@ -88,6 +88,11 @@ like any git merge, then committed.
     a `?N` count.
   - 🟢 green `✓` — no tracked agent in the pane (plain shell / no agent).
   - `⏸` (snooze/wait) and `P` (parked) are kept as-is.
+  Agent presence is validated from the pane's live process tree: running,
+  sleeping, or I/O-waiting Claude/Codex processes remain tracked while stopped,
+  zombie, dead, or exited agents are treated as no agent. Persisted hook files
+  provide status only after that liveness check, so stale metadata cannot turn a
+  Bash window into an agent window.
   This required emitting a distinct `ask` state (`Notification` hook) and, because
   Claude Code fires **no hook on ESC-interrupt**, an interrupt-reconciliation pass
   in the collector: a pane stuck at `working` that no longer shows Claude's

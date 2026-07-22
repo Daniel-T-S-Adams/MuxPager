@@ -6,7 +6,7 @@
 # Requires the caller to:
 #   - source lib/session-status.sh (for STATUS_DIR, PARKED_DIR, WAIT_DIR)
 #   - declare global: ENTRIES, SEL_NAMES, SEL_TYPES, PANE_COUNTS (associative),
-#     KNOWN_AGENTS (associative), LIVE_PANES (associative), PID_PPID (associative),
+#     KNOWN_AGENTS (associative), LIVE_PANES (associative),
 #     SESS_START, _COLLECT_TICK, _LAST_STATUS_MTIME
 #
 # Populates: ENTRIES[], SEL_NAMES[], SEL_TYPES[], PANE_COUNTS[], SESS_START,
@@ -18,40 +18,27 @@
 [[ -n "${_COLLECT_LIB_LOADED:-}" ]] && return 0
 _COLLECT_LIB_LOADED=1
 
-# ─── PID ancestry helpers ─────────────────────────────────────────
-
-_build_pid_map() {
-    PID_PPID=()
-    while read -r p pp; do
-        [ -z "$p" ] && continue
-        PID_PPID[$p]="$pp"
-    done < <(ps -eo pid=,ppid= 2>/dev/null)
-}
-
-# Walk up the process tree from $1 looking for any PID in the
-# space-separated set $2.  Returns 0 and prints the matching pane PID.
-find_ancestor_pane() {
-    local pid="$1"
-    local pane_pid_set=" $2 "
-    local depth=0
-    while (( pid > 1 && depth < 30 )); do
-        if [[ "$pane_pid_set" == *" $pid "* ]]; then
-            echo "$pid"
-            return 0
-        fi
-        pid="${PID_PPID[$pid]:-}"
-        [ -z "$pid" ] && return 1
-        ((depth++))
-    done
-    return 1
-}
-
 # ─── State priority ───────────────────────────────────────────────
 _state_pri() {
     case "$1" in
         working) echo 5 ;; wait)    echo 4 ;; ask)     echo 3 ;;
         done)    echo 2 ;; parked)  echo 1 ;; *)       echo 0 ;;
     esac
+}
+
+# Hook-written identity files bridge the very short startup interval before a
+# new agent appears in the process snapshot. After that grace, process liveness
+# is authoritative: a marker alone must not turn a shell into an agent pane.
+_agent_marker_is_fresh() {
+    local marker="$1"
+    local now mtime
+    printf -v now '%(%s)T' -1
+    if [[ "$(uname)" == "Darwin" ]]; then
+        mtime=$(stat -f %m "$marker" 2>/dev/null) || return 1
+    else
+        mtime=$(stat -c %Y "$marker" 2>/dev/null) || return 1
+    fi
+    (( now - mtime < 5 ))
 }
 
 # ─── Sidebar mode (tree | agents) ─────────────────────────────────
@@ -109,6 +96,9 @@ collect_data() {
     else
         cur_mtime=$(stat -c %Y "$STATUS_DIR" "$PARKED_DIR" "$WAIT_DIR" "$PANE_DIR" "$REFRESH_FILE" 2>/dev/null)
     fi
+    local refresh_token=""
+    [ -f "$REFRESH_FILE" ] && refresh_token=$(<"$REFRESH_FILE")
+    cur_mtime+="|${refresh_token}"
     if [[ "$cur_mtime" == "$_LAST_STATUS_MTIME" ]]; then
         _COLLECT_CHANGED=0
         return
@@ -135,18 +125,32 @@ collect_data() {
     declare -A pane_to_id        # pane_pid → pane_id (e.g. %5)
     declare -A pane_to_window    # pane_id → window_index
     declare -A window_names      # session:window_index → window_name
+    declare -A session_panes     # session → live non-sidebar pane IDs
+    declare -A pane_commands     # pane_id → current foreground command
     local all_pane_pids=""
 
     local _tab=$'\t'
-    while IFS=$'\t' read -r sname pane_id pcwd ppid win_idx win_name; do
+    local pane_rows
+    pane_rows=$(tmux list-panes -a -F "#{session_name}${_tab}#{pane_id}${_tab}#{pane_current_path}${_tab}#{pane_pid}${_tab}#{window_index}${_tab}#{window_name}${_tab}#{pane_current_command}${_tab}#{pane_title}" 2>/dev/null || true)
+    if [ -z "$pane_rows" ]; then
+        # Compatibility fallback for older tmux/test fixtures. Missing command
+        # and title fields simply use the shell label and cannot identify a
+        # sidebar pane, but agent liveness remains correct.
+        pane_rows=$(tmux list-panes -a -F "#{session_name}${_tab}#{pane_id}${_tab}#{pane_current_path}${_tab}#{pane_pid}${_tab}#{window_index}${_tab}#{window_name}" 2>/dev/null || true)
+    fi
+    while IFS=$'\t' read -r sname pane_id pcwd ppid win_idx win_name pane_command pane_title; do
         [ -z "$sname" ] && continue
 
         [[ -z "${sess_cwd[$sname]:-}" ]] && sess_cwd[$sname]="$pcwd"
-        pane_to_session[$ppid]="$sname"
-        pane_to_id[$ppid]="$pane_id"
-        pane_to_window[$pane_id]="$win_idx"
-        window_names["${sname}:${win_idx}"]="$win_name"
-        all_pane_pids+="$ppid "
+        if [ "$pane_title" != "agent-sidebar" ]; then
+            pane_to_session[$ppid]="$sname"
+            pane_to_id[$ppid]="$pane_id"
+            pane_to_window[$pane_id]="$win_idx"
+            pane_commands[$pane_id]="${pane_command:-shell}"
+            session_panes[$sname]+="$pane_id "
+            window_names["${sname}:${win_idx}"]="$win_name"
+            all_pane_pids+="$ppid "
+        fi
 
         [[ -n "${sess_seen[$sname]:-}" ]] && continue
         sess_seen[$sname]=1
@@ -187,7 +191,7 @@ collect_data() {
         sess_state[$sname]="$state"
         sess_extra[$sname]="$extra"
         sess_ssh[$sname]="$is_ssh"
-    done < <(tmux list-panes -a -F "#{session_name}${_tab}#{pane_id}${_tab}#{pane_current_path}${_tab}#{pane_pid}${_tab}#{window_index}${_tab}#{window_name}" 2>/dev/null)
+    done <<< "$pane_rows"
 
     # ── 3. Worktree detection ────────────────────────────────────
     declare -A worktree_parent worktree_children
@@ -219,55 +223,57 @@ collect_data() {
         [ -n "$pid" ] && LIVE_PANES[$pid]=1
     done
 
-    # Rebuild known agents each cycle from current detections plus persisted
-    # hook-written pane markers. This avoids stale in-memory agent identities
-    # when a pane stops running Claude/Codex but stays open.
+    # Rebuild known agents from usable live processes. R/S/D/I and other live
+    # states count, so an agent waiting for a long-running child remains an
+    # agent. Stopped, zombie, and dead roots do not count.
     KNOWN_AGENTS=()
 
     local pane_dir="$STATUS_DIR/panes"
+    reset_agent_process_cache
+
+    local ppid match_pid owner pid_id agent_name
+    for ppid in $all_pane_pids; do
+        match_pid=$(find_matching_descendant_pid "$ppid") || continue
+        agent_name=$(agent_name_for_process "$match_pid" 2>/dev/null || echo "agent")
+        owner="${pane_to_session[$ppid]:-}"
+        pid_id="${pane_to_id[$ppid]:-}"
+        [ -n "$owner" ] && [ -n "$pid_id" ] || continue
+        KNOWN_AGENTS["${owner}:${pid_id}"]="$agent_name"
+    done
+
+    # A hook marker is a short-lived startup hint, not permanent proof of agent
+    # presence. Prune old markers when no usable agent process remains.
+    declare -A stale_agent_sessions=()
     local agent_file=""
     for agent_file in "$pane_dir/"*.agent; do
         [ -f "$agent_file" ] || continue
-        local bname pid_id owner agent_name
+        local bname key
         bname=$(basename "$agent_file" .agent)
         pid_id="${bname##*_}"
         owner="${bname%_${pid_id}}"
         [ -n "${LIVE_PANES[$pid_id]:-}" ] || continue
+        key="${owner}:${pid_id}"
+        [ -n "${KNOWN_AGENTS[$key]:-}" ] && continue
+
         agent_name=$(<"$agent_file")
         [ -n "$agent_name" ] || continue
-        KNOWN_AGENTS["${owner}:${pid_id}"]="$agent_name"
+        if _agent_marker_is_fresh "$agent_file"; then
+            KNOWN_AGENTS[$key]="$agent_name"
+            continue
+        fi
+
+        stale_agent_sessions[$owner]=1
+        rm -f "$agent_file" "$pane_dir/${owner}_${pid_id}.status"
+        rm -f "$WAIT_DIR/${owner}_${pid_id}.wait" "$PARKED_DIR/${owner}_${pid_id}.parked"
     done
-
-    # Find agent processes — pgrep globally, walk UP to find owning pane.
-    local agent_lines
-    agent_lines=$(pgrep -a "claude|codex|devin" 2>/dev/null || true)
-    if [[ -n "$agent_lines" ]]; then
-        _build_pid_map
-        while IFS= read -r apid_line; do
-            [ -z "$apid_line" ] && continue
-            local apid="${apid_line%% *}"
-            local acmd="${apid_line#* }"
-            local agent_name="agent"
-            [[ "$acmd" == *claude* ]] && agent_name="claude"
-            [[ "$acmd" == *codex* ]] && agent_name="codex"
-            [[ "$acmd" == *devin* ]] && agent_name="devin"
-
-            local pane_pid
-            pane_pid=$(find_ancestor_pane "$apid" "$all_pane_pids") || continue
-            local owner="${pane_to_session[$pane_pid]:-}"
-            [ -z "$owner" ] && continue
-            local pid_id="${pane_to_id[$pane_pid]:-}"
-
-            KNOWN_AGENTS["${owner}:${pid_id}"]="$agent_name"
-        done <<< "$agent_lines"
-    fi
 
     # Build sess_agents from KNOWN_AGENTS + per-pane status files.
     declare -A sess_agents
+    declare -A pane_agent_name pane_agent_status
     for key in "${!KNOWN_AGENTS[@]}"; do
-        local owner="${key%%:*}"
-        local pid_id="${key#*:}"
-        local agent_name="${KNOWN_AGENTS[$key]}"
+        owner="${key%%:*}"
+        pid_id="${key#*:}"
+        agent_name="${KNOWN_AGENTS[$key]}"
         local pane_status=""
         local pane_file="$pane_dir/${owner}_${pid_id}.status"
         if [ -f "$pane_file" ]; then
@@ -284,6 +290,21 @@ collect_data() {
         fi
         [ -z "$pane_status" ] && pane_status="${sess_state[$owner]:-done}"
         sess_agents[$owner]+="${pid_id}:${agent_name}:${pane_status} "
+        pane_agent_name[$key]="$agent_name"
+        pane_agent_status[$key]="$pane_status"
+    done
+
+    # If stale metadata was the session's only evidence of a local agent, make
+    # the session genuinely agent-free. Explicit wait/park and remote states
+    # remain user-controlled.
+    for owner in "${!stale_agent_sessions[@]}"; do
+        [ -n "${sess_agents[$owner]:-}" ] && continue
+        [ -n "${sess_ssh[$owner]:-}" ] && continue
+        case "${sess_state[$owner]:-noagent}" in
+            wait|parked) continue ;;
+        esac
+        sess_state[$owner]="noagent"
+        rm -f "$STATUS_DIR/${owner}.status"
     done
 
     # ── 5. Re-derive session state from per-pane statuses ──────
@@ -291,7 +312,12 @@ collect_data() {
         local cur_st="${sess_state[$sname]}"
         [[ "$cur_st" == "wait" || "$cur_st" == "parked" ]] && continue
         local best_pri=-1 best_st="$cur_st"
-        best_pri=$(_state_pri "$best_st" 2>/dev/null || echo 0)
+        if [ -n "${stale_agent_sessions[$sname]:-}" ]; then
+            best_pri=0
+            best_st="noagent"
+        else
+            best_pri=$(_state_pri "$best_st" 2>/dev/null || echo 0)
+        fi
         for ap in ${sess_agents[$sname]}; do
             local rest="${ap#*:}"; rest="${rest#*:}"
             local ps="${rest%%:*}"
@@ -302,6 +328,9 @@ collect_data() {
             fi
         done
         sess_state[$sname]="$best_st"
+        if [ -n "${stale_agent_sessions[$sname]:-}" ] && [ -z "${sess_ssh[$sname]:-}" ]; then
+            write_session_status "$sname" "$best_st"
+        fi
     done
 
     # ── 5a. Shared status-line summary counts ────────────────────
@@ -399,11 +428,33 @@ collect_data() {
         done
     }
 
+    _get_tree_pane_arr() {
+        local session="$1"
+        local pid key label state
+        _agent_result=()
+        for pid in ${session_panes[$session]:-}; do
+            key="${session}:${pid}"
+            if [ -n "${pane_agent_name[$key]:-}" ]; then
+                label="${pane_agent_name[$key]}"
+                state="${pane_agent_status[$key]}"
+            else
+                label="${pane_commands[$pid]:-shell}"
+                state="noagent"
+            fi
+            _agent_result+=("${pid}:${label}:${state}")
+        done
+    }
+
     _emit_agents() {
         local sname="$1"
-        _get_agent_arr "$sname"
+        if [[ "$SIDEBAR_MODE" == "agents" ]]; then
+            _get_agent_arr "$sname"
+        else
+            _get_tree_pane_arr "$sname"
+        fi
         local agents=("${_agent_result[@]}")
-        # Tree mode collapses single-agent sessions to just the session row.
+        # Tree mode expands multi-pane/window sessions, including ordinary
+        # shell panes. Agents mode contains only actual agent panes.
         # Agents mode expands every agent pane, even when there is only one.
         if [[ "$SIDEBAR_MODE" != "agents" ]]; then
             (( ${#agents[@]} <= 1 )) && return

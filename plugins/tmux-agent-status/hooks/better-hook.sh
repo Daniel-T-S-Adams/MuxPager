@@ -110,7 +110,7 @@ clear_interaction_overrides() {
 }
 
 mark_refresh() {
-    touch "$REFRESH_FILE" 2>/dev/null || true
+    printf '%s:%s:%s\n' "$(date +%s)" "$$" "${RANDOM:-0}" > "$REFRESH_FILE" 2>/dev/null || true
 }
 
 # Returns 0 if the Claude Code Stop payload reports a background task that is

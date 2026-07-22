@@ -106,7 +106,7 @@ clear_interaction_overrides() {
 }
 
 mark_refresh() {
-    touch "$REFRESH_FILE" 2>/dev/null || true
+    printf '%s:%s:%s\n' "$(date +%s)" "$$" "${RANDOM:-0}" > "$REFRESH_FILE" 2>/dev/null || true
 }
 
 TMUX_SESSION=$(get_tmux_session) || exit 0

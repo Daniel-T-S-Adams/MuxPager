@@ -67,6 +67,7 @@ claude_status="$(cat "$PANE_DIR/mixed-hooks_%3.status")"
 assert_eq "working" "$session_status" "Claude UserPromptSubmit should mark the session working"
 assert_eq "working" "$claude_status" "Claude UserPromptSubmit should mark the current pane working"
 [ -f "$REFRESH_FILE" ] || { echo "Assertion failed: Claude UserPromptSubmit should touch sidebar refresh marker" >&2; exit 1; }
+prompt_refresh=$(<"$REFRESH_FILE")
 if [ -f "$WAIT_DIR/mixed-hooks_%3.wait" ]; then
     echo "Assertion failed: Claude UserPromptSubmit should clear the current pane wait override" >&2
     exit 1
@@ -80,6 +81,11 @@ echo "working" > "$PANE_DIR/mixed-hooks_%13.status"
 echo "codex" > "$PANE_DIR/mixed-hooks_%13.agent"
 
 run_hook "Stop" "%3"
+stop_refresh=$(<"$REFRESH_FILE")
+if [ "$stop_refresh" = "$prompt_refresh" ]; then
+    echo "Assertion failed: consecutive Claude hooks should write distinct refresh tokens" >&2
+    exit 1
+fi
 session_status="$(cat "$STATUS_DIR/mixed-hooks.status")"
 claude_status="$(cat "$PANE_DIR/mixed-hooks_%3.status")"
 claude_agent="$(cat "$PANE_DIR/mixed-hooks_%3.agent")"

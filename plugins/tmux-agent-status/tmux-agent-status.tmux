@@ -127,7 +127,7 @@ tmux set-hook -ga after-rename-window "run-shell -b '$CURRENT_DIR/scripts/sideba
 tmux set-hook -ga session-created "run-shell -b 'sleep 0.5 && $CURRENT_DIR/scripts/sidebar-toggle.sh'"
 
 # Start sidebar data collector daemon (one per tmux server)
-"$CURRENT_DIR/scripts/sidebar-collector.sh" &
+tmux run-shell -b "$CURRENT_DIR/scripts/sidebar-collector.sh"
 
 # Also start it now if tmux is already running
 if tmux list-sessions >/dev/null 2>&1; then

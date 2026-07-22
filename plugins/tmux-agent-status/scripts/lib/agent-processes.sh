@@ -3,27 +3,120 @@
 # Shared helpers for finding Claude/Codex/Devin processes inside tmux sessions.
 # Uses an iterative BFS with a pre-built PID map to avoid recursive subshells.
 
-# Global PID→children map and PID→args cache, built once per script invocation.
+# Global process snapshot, built once per short-lived script invocation. The
+# sidebar collector is long-lived and calls reset_agent_process_cache before
+# each full collection pass.
 declare -A _AP_CHILDREN=()  # pid → space-separated child PIDs
 declare -A _AP_ARGS=()      # pid → command args
+declare -A _AP_STATE=()     # pid → ps state (R/S/D/I/T/Z/X...)
 _AP_MAP_BUILT=0
+
+reset_agent_process_cache() {
+    _AP_MAP_BUILT=0
+    _AP_CHILDREN=()
+    _AP_ARGS=()
+    _AP_STATE=()
+}
 
 _build_agent_pid_map() {
     (( _AP_MAP_BUILT )) && return
     _AP_MAP_BUILT=1
     _AP_CHILDREN=()
     _AP_ARGS=()
-    local pid ppid args
+    _AP_STATE=()
+
+    local snapshot has_state=1
+    snapshot=$(ps -eo pid=,ppid=,stat=,args= 2>/dev/null || true)
+    if [ -n "$snapshot" ]; then
+        # Some minimal/fake ps implementations ignore the requested columns
+        # and return the legacy pid/ppid/args shape. Detect that before parsing
+        # the third token as a process state.
+        local sample sample_rest sample_state
+        sample="${snapshot%%$'\n'*}"
+        sample="${sample#"${sample%%[![:space:]]*}"}"
+        sample_rest="${sample#* }"
+        sample_rest="${sample_rest#"${sample_rest%%[![:space:]]*}"}"
+        sample_rest="${sample_rest#* }"
+        sample_rest="${sample_rest#"${sample_rest%%[![:space:]]*}"}"
+        sample_state="${sample_rest%% *}"
+        local valid_state_re='^[RSDITtZKXxWPN<>+sLl]+$'
+        if [[ ! "$sample_state" =~ $valid_state_re ]]; then
+            has_state=0
+            snapshot=$(ps -eo pid=,ppid=,args= 2>/dev/null || true)
+        fi
+    fi
+    if [ -z "$snapshot" ]; then
+        # Compatibility fallback for restricted/minimal ps implementations.
+        # Unknown state remains usable so process detection still works.
+        has_state=0
+        snapshot=$(ps -eo pid=,ppid=,args= 2>/dev/null || true)
+    fi
+
+    local line pid ppid state args
     while IFS= read -r line; do
+        line="${line#"${line%%[![:space:]]*}"}"
         pid="${line%% *}"
         line="${line#* }"
+        line="${line#"${line%%[![:space:]]*}"}"
         ppid="${line%% *}"
-        args="${line#* }"
+        line="${line#* }"
+        line="${line#"${line%%[![:space:]]*}"}"
+        if (( has_state )); then
+            state="${line%% *}"
+            args="${line#* }"
+            args="${args#"${args%%[![:space:]]*}"}"
+        else
+            state="?"
+            args="$line"
+        fi
         [ -z "$pid" ] && continue
         [ -z "$ppid" ] && continue
         _AP_ARGS[$pid]="$args"
+        _AP_STATE[$pid]="$state"
         _AP_CHILDREN[$ppid]+="$pid "
-    done < <(ps -eo pid=,ppid=,args= 2>/dev/null)
+    done <<< "$snapshot"
+}
+
+# R/S/D/I and similar states are all live. In particular, sleeping or
+# uninterruptible-wait agents may simply be waiting for a long-running tool and
+# must remain visible. Only terminal process states are rejected.
+agent_process_state_is_usable() {
+    case "${1:0:1}" in
+        T|t|Z|X|x) return 1 ;;
+        *)         return 0 ;;
+    esac
+}
+
+agent_name_from_args() {
+    local args="$1"
+    local executable arg1 arg2 candidate
+    read -r executable arg1 arg2 _ <<< "$args"
+    candidate="${executable##*/}"
+
+    # Support common script launchers without matching an arbitrary argument
+    # such as `rg codex` or `bash -c claude` as an agent process.
+    case "$candidate" in
+        node|nodejs|bun|deno)
+            candidate="${arg1##*/}"
+            ;;
+        env)
+            candidate="${arg1##*/}"
+            if [[ "$candidate" == "node" || "$candidate" == "nodejs" || "$candidate" == "bun" || "$candidate" == "deno" ]]; then
+                candidate="${arg2##*/}"
+            fi
+            ;;
+    esac
+
+    case "$candidate" in
+        claude|codex|devin) echo "$candidate" ;;
+        *) return 1 ;;
+    esac
+}
+
+agent_name_for_process() {
+    local pid="$1"
+    _build_agent_pid_map
+    agent_name_from_args "${_AP_ARGS[$pid]:-}"
 }
 
 find_matching_descendant_pid() {
@@ -39,9 +132,17 @@ find_matching_descendant_pid() {
         local cur="${queue[$qi]}"
         ((qi++))
         local cur_args="${_AP_ARGS[$cur]:-}"
-        if [ -n "$cur_args" ] && [[ "$cur_args" =~ (^|[[:space:]/])($pattern)([[:space:]]|$) ]]; then
-            echo "$cur"
-            return 0
+        local detected_name=""
+        [ -n "$cur_args" ] && detected_name=$(agent_name_from_args "$cur_args" 2>/dev/null || true)
+        if [ -n "$detected_name" ] && [[ "$detected_name" =~ ^($pattern)$ ]]; then
+            if agent_process_state_is_usable "${_AP_STATE[$cur]:-?}"; then
+                echo "$cur"
+                return 0
+            fi
+
+            # A stopped/dead agent may leave live helper descendants behind.
+            # Do not mistake those helpers for an independently active agent.
+            continue
         fi
         # Enqueue children
         local children="${_AP_CHILDREN[$cur]:-}"
@@ -61,7 +162,11 @@ find_session_agent_pid() {
     _build_agent_pid_map
 
     local pane_pids
-    pane_pids=$(tmux list-panes -t "$session" -F "#{pane_pid}" 2>/dev/null) || return 1
+    # -s covers every window in the session, not only its current window.
+    pane_pids=$(tmux list-panes -t "$session" -s -F "#{pane_pid}" 2>/dev/null || true)
+    if [ -z "$pane_pids" ]; then
+        pane_pids=$(tmux list-panes -t "$session" -F "#{pane_pid}" 2>/dev/null) || return 1
+    fi
 
     local pane_pid
     while IFS= read -r pane_pid; do
@@ -75,6 +180,24 @@ find_session_agent_pid() {
     done <<< "$pane_pids"
 
     return 1
+}
+
+find_pane_agent_pid() {
+    local pane_target="$1"
+    local pane_pid=""
+
+    pane_pid=$(tmux display-message -p -t "$pane_target" "#{pane_pid}" 2>/dev/null || true)
+    if [ -z "$pane_pid" ]; then
+        pane_pid=$(tmux list-panes -t "$pane_target" -F "#{pane_pid}" 2>/dev/null || true)
+        pane_pid="${pane_pid%%$'\n'*}"
+    fi
+    [ -n "$pane_pid" ] || return 1
+
+    find_matching_descendant_pid "$pane_pid"
+}
+
+pane_has_agent_process() {
+    find_pane_agent_pid "$1" >/dev/null 2>&1
 }
 
 session_has_agent_process() {

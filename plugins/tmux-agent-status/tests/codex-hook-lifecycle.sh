@@ -65,6 +65,7 @@ assert_eq "done" "$session_status" "SessionStart should seed the session as done
 assert_eq "done" "$pane_status" "SessionStart should seed the pane as done"
 assert_eq "codex" "$agent_name" "Codex hooks should persist the pane agent name"
 [ -f "$REFRESH_FILE" ] || { echo "Assertion failed: SessionStart should touch sidebar refresh marker" >&2; exit 1; }
+session_start_refresh=$(<"$REFRESH_FILE")
 
 echo "wait" > "$STATUS_DIR/codex-hooks.status"
 echo "wait" > "$PANE_DIR/codex-hooks_%9.status"
@@ -80,6 +81,11 @@ pane_status="$(cat "$PANE_DIR/codex-hooks_%9.status")"
 assert_eq "working" "$session_status" "UserPromptSubmit should mark the session working"
 assert_eq "working" "$pane_status" "UserPromptSubmit should mark the pane working"
 [ -f "$REFRESH_FILE" ] || { echo "Assertion failed: UserPromptSubmit should leave a sidebar refresh marker" >&2; exit 1; }
+prompt_refresh=$(<"$REFRESH_FILE")
+if [ "$prompt_refresh" = "$session_start_refresh" ]; then
+    echo "Assertion failed: consecutive Codex hooks should write distinct refresh tokens" >&2
+    exit 1
+fi
 if [ -f "$WAIT_DIR/codex-hooks.wait" ]; then
     echo "Assertion failed: UserPromptSubmit should clear wait mode" >&2
     exit 1

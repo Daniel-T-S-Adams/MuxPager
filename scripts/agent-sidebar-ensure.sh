@@ -15,6 +15,13 @@ PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../plugins/tmux-agent-status/sc
 SIDEBAR_TITLE="agent-sidebar"
 TARGET="${1:-}"
 
+LOCK_NAME="agent-sidebar-ensure"
+tmux wait-for -L "$LOCK_NAME" 2>/dev/null || exit 0
+unlock() {
+    tmux wait-for -U "$LOCK_NAME" 2>/dev/null || true
+}
+trap unlock EXIT
+
 # Bail quietly if the plugin isn't installed.
 [ -n "$PLUGIN_DIR" ] && [ -x "$PLUGIN_DIR/sidebar.sh" ] || exit 0
 

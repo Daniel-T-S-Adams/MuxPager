@@ -25,6 +25,12 @@ REFRESH_FILE="$STATUS_DIR/.sidebar-refresh"
 mkdir -p "$STATUS_DIR" "$PARKED_DIR" "$WAIT_DIR" "$PANE_DIR" "$SIDEBAR_CLIENT_DIR"
 [ -f "$REFRESH_FILE" ] || : > "$REFRESH_FILE"
 
+write_sidebar_refresh_token() {
+    # Content, rather than second-resolution mtime, makes rapid working→done
+    # transitions visible even when both hooks run within the same second.
+    printf '%s:%s:%s\n' "$(date +%s)" "$$" "${RANDOM:-0}" > "$REFRESH_FILE" 2>/dev/null || true
+}
+
 # Source process-detection helpers from the same lib directory.
 # shellcheck source=agent-processes.sh
 source "$_LIB_DIR/agent-processes.sh"
@@ -264,7 +270,14 @@ get_pane_status() {
         return
     fi
 
-    get_agent_status "$session"
+    # A local pane without pane-level metadata must not inherit the status of
+    # an agent in another window. Only inherit session state when this pane has
+    # its own usable agent process. Remote SSH status remains session-scoped.
+    if is_ssh_session "$session" || pane_has_agent_process "$pane_id"; then
+        get_agent_status "$session"
+    else
+        echo ""
+    fi
 }
 
 get_window_status() {

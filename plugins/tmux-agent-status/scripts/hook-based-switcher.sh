@@ -16,11 +16,12 @@ source "$SCRIPT_DIR/lib/selection-targets.sh"
 status_icon() {
     case "$1" in
         working) printf '\033[1;33m⣾\033[0m' ;;
-        done) printf '\033[1;32m✓\033[0m' ;;
-        ask) printf '\033[1;31m?\033[0m' ;;
+        # A tracked agent that is finished/idle or asking is waiting on you.
+        done|ask) printf '\033[1;31m?\033[0m' ;;
         wait) printf '\033[1;36m⏸\033[0m' ;;
         parked) printf '\033[1;35mP\033[0m' ;;
-        *) printf '\033[90m·\033[0m' ;;
+        # No tracked agent in this target: ordinary shell/non-agent pane.
+        *) printf '\033[1;32m✓\033[0m' ;;
     esac
 }
 
@@ -258,7 +259,6 @@ get_switcher_rows() {
 
             local window_status window_icon
             window_status=$(best_status_for_panes "$session" "${panes[@]}")
-            [ -z "$window_status" ] && window_status="$session_status"
             window_icon=$(status_icon "$window_status")
             local window_token="${session}:w${window_index}"
             local window_marker="•"

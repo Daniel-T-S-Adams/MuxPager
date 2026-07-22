@@ -6,7 +6,8 @@ source "$SCRIPT_DIR/lib/sidebar-clients.sh"
 
 case "${1:-refresh}" in
     collect)
-        touch "$REFRESH_FILE"
+        write_sidebar_refresh_token
+        tmux run-shell -b "$SCRIPT_DIR/sidebar-collector.sh" 2>/dev/null || true
         ;;
     active)
         signal_sidebar_clients USR2 active

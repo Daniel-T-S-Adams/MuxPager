@@ -15,6 +15,8 @@ source "$CURRENT_DIR/lib/sidebar-clients.sh"
 source "$CURRENT_DIR/lib/selection-targets.sh"
 # shellcheck source=lib/sidebar-selection.sh
 source "$CURRENT_DIR/lib/sidebar-selection.sh"
+# shellcheck source=lib/render-text.sh
+source "$CURRENT_DIR/lib/render-text.sh"
 
 # ─── Mode ─────────────────────────────────────────────────────────
 PREVIEW_MODE=0
@@ -215,7 +217,20 @@ _sync_selected_to_current_client() {
     return 1
 }
 
+_ensure_sidebar_collector() {
+    local pid_file="$STATUS_DIR/.sidebar-collector.pid"
+    local collector_pid=""
+    [ -f "$pid_file" ] && collector_pid=$(<"$pid_file")
+    if [ -n "$collector_pid" ] && kill -0 "$collector_pid" 2>/dev/null; then
+        return 0
+    fi
+
+    tmux run-shell -b "$CURRENT_DIR/sidebar-collector.sh" 2>/dev/null || true
+}
+
 collect() {
+    _ensure_sidebar_collector
+
     # Read from the shared cache written by sidebar-collector.sh.
     # Only re-parse when the cache file has been updated.
     local cache_file="$STATUS_DIR/.sidebar-cache"
@@ -331,7 +346,7 @@ render() {
     else
         buf+=" "
         (( nw > 0 ))  && buf+="${BYEL}${SPINNER_FRAMES[$SPINNER_TICK]}${nw}${RST} "
-        (( nd > 0 ))  && buf+="${BGRN}✓${nd}${RST} "
+        (( nd > 0 ))  && buf+="${RED}?${nd}${RST} "
         (( nwt > 0 )) && buf+="${BCYN}⏸${nwt}${RST} "
         (( nw + nd + nwt == 0 )) && buf+="${DIM}no agents${RST}"
         buf+="\033[K\n"
@@ -806,13 +821,19 @@ render() {
 
     # ── Footer ──
     buf+="$sep"
+    local footer_text footer_style
     if (( WAIT_INPUT_ACTIVE )); then
-        buf+=" ${BCYN}Wait minutes for ${WAIT_INPUT_TARGET}: ${RST}${WAIT_INPUT_BUF}\033[K"
+        footer_text=" Wait minutes for ${WAIT_INPUT_TARGET}: ${WAIT_INPUT_BUF}"
+        footer_style="$BCYN"
     elif (( SEARCH_ACTIVE )); then
-        buf+=" ${DIM}type to filter  ⏎ select  esc cancel${RST}\033[K"
+        footer_text=" type to filter  ⏎ select  esc cancel"
+        footer_style="$DIM"
     else
-        buf+=" ${DIM}⏎ select  / search  w wait  p park  m mode  q quit${RST}\033[K"
+        footer_text=" ⏎ select  / search  w wait  p park  m mode  q quit"
+        footer_style="$DIM"
     fi
+    footer_text=$(fit_text_to_width "$footer_text" "$LW")
+    buf+="${footer_style}${footer_text}${RST}\033[K"
 
     # Flush entire frame at once (no flicker)
     printf '\033[H%b' "$buf"
