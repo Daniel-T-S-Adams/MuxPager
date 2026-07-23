@@ -1,8 +1,8 @@
 # my-tmux
 
-My customized, self-contained tmux setup. The tmux plugin, agent hooks, and hook
-configuration templates all live in this repository, with no plugin manager or
-network fetch at startup.
+My customized, self-contained tmux setup. The tmux plugin, agent hooks, Telegram
+bridge, and hook configuration templates all live in this repository, with no
+plugin manager or network fetch at startup.
 
 ## What's here
 
@@ -44,11 +44,13 @@ hooks = true
 
 Claude Code cannot load a separate hook file directly. Merge the `hooks` object
 from `config/claude-hooks.json` into `~/.claude/settings.json`. Both templates
-invoke hook scripts from `~/my-tmux/plugins/tmux-agent-status/hooks/`, so agent
-tracking never depends on another plugin checkout.
+resolve hook scripts through installer-managed links under
+`~/.local/libexec/tmux-agent-console`, so agent tracking never depends on a
+fixed clone location or another plugin checkout.
 
-> The config references `~/my-tmux` by absolute path. If you clone elsewhere,
-> update the paths in `.tmux.conf` (the sidebar script itself is path-portable).
+The tracked configuration discovers its checkout path when tmux loads it and
+exports that path to Codex and Claude as `TMUX_AGENT_PROJECT_ROOT`; it does not
+depend on the repository being cloned to `~/my-tmux`.
 
 ## Telegram agent topics
 

@@ -13,6 +13,7 @@ install -d -m 700 "$SYSTEMD_DIR"
 if [ ! -f "$ENV_FILE" ]; then
     install -m 600 "$REPO_DIR/config/tmux-telegram-bridge.env.example" "$ENV_FILE"
 fi
+"$REPO_DIR/scripts/setup-runtime-links.sh"
 ln -sfn "$REPO_DIR/systemd/tmux-telegram-bridge.service" "$SERVICE_LINK"
 
 systemctl --user daemon-reload

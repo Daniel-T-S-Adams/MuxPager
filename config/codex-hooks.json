@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$HOME/my-tmux/plugins/tmux-agent-status/hooks/codex-hook.sh\" SessionStart"
+            "command": "bash \"$HOME/.local/libexec/tmux-agent-console/hooks/codex-hook.sh\" SessionStart"
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$HOME/my-tmux/plugins/tmux-agent-status/hooks/codex-hook.sh\" UserPromptSubmit"
+            "command": "bash \"$HOME/.local/libexec/tmux-agent-console/hooks/codex-hook.sh\" UserPromptSubmit"
           }
         ]
       }
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$HOME/my-tmux/plugins/tmux-agent-status/hooks/codex-hook.sh\" PreToolUse"
+            "command": "bash \"$HOME/.local/libexec/tmux-agent-console/hooks/codex-hook.sh\" PreToolUse"
           }
         ]
       }
@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$HOME/my-tmux/plugins/tmux-agent-status/hooks/codex-hook.sh\" Stop"
+            "command": "bash \"$HOME/.local/libexec/tmux-agent-console/hooks/codex-hook.sh\" Stop"
           }
         ]
       }

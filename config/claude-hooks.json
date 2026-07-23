@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$HOME/my-tmux/plugins/tmux-agent-status/hooks/better-hook.sh\" Notification"
+            "command": "bash \"$HOME/.local/libexec/tmux-agent-console/hooks/better-hook.sh\" Notification"
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$HOME/my-tmux/plugins/tmux-agent-status/hooks/better-hook.sh\" UserPromptSubmit"
+            "command": "bash \"$HOME/.local/libexec/tmux-agent-console/hooks/better-hook.sh\" UserPromptSubmit"
           }
         ]
       }
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$HOME/my-tmux/plugins/tmux-agent-status/hooks/better-hook.sh\" PreToolUse"
+            "command": "bash \"$HOME/.local/libexec/tmux-agent-console/hooks/better-hook.sh\" PreToolUse"
           }
         ]
       }
@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$HOME/my-tmux/plugins/tmux-agent-status/hooks/better-hook.sh\" Stop"
+            "command": "bash \"$HOME/.local/libexec/tmux-agent-console/hooks/better-hook.sh\" Stop"
           }
         ]
       }

@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=%h/.config/tmux-telegram-bridge/env
-ExecStart=%h/my-tmux/scripts/tmux-telegram-bridge.py
+ExecStart=%h/.local/bin/tmux-telegram-bridge
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
