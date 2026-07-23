@@ -3,6 +3,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SYSTEMCTL_BIN="${TMUX_AGENT_SYSTEMCTL_BIN:-systemctl}"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-telegram-bridge"
 SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 ENV_FILE="$CONFIG_DIR/env"
@@ -16,7 +17,7 @@ fi
 "$REPO_DIR/scripts/setup-runtime-links.sh"
 ln -sfn "$REPO_DIR/systemd/tmux-telegram-bridge.service" "$SERVICE_LINK"
 
-systemctl --user daemon-reload
+"$SYSTEMCTL_BIN" --user daemon-reload
 
 echo "Telegram bridge service installed."
 echo "1. Edit $ENV_FILE and set TMUX_TELEGRAM_BOT_TOKEN."
