@@ -11,7 +11,7 @@ network fetch at startup.
 config/codex-hooks.json        # global Codex lifecycle hook configuration
 config/claude-hooks.json       # Claude Code hook configuration to merge
 scripts/agent-sidebar-ensure.sh# keeps the agent-status sidebar permanent
-scripts/tmux-telegram-bridge.py# private phone inbox for live agent panes
+scripts/tmux-telegram-bridge.py# private Telegram topics for live agent panes
 systemd/                      # persistent Telegram bridge user service
 plugins/tmux-agent-status/     # VENDORED plugin, tracked via git subtree
 ```
@@ -50,32 +50,48 @@ tracking never depends on another plugin checkout.
 > The config references `~/my-tmux` by absolute path. If you clone elsewhere,
 > update the paths in `.tmux.conf` (the sidebar script itself is path-portable).
 
-## Telegram agent inbox
+## Telegram agent topics
 
-The optional Telegram bridge provides a private, single-message inbox for the
-live Codex and Claude panes on this tmux server:
+The optional Telegram bridge uses one private forum group as a set of persistent
+agent chats. The group contains a `Control` topic and one bot-created topic for
+every live Codex or Claude pane:
 
-- `/agents` displays one inline button per live agent pane.
-- Tapping an agent shows its latest response. `Previous`, `Next`, and `Refresh`
-  let you click through the panes without filling the chat with old output.
-- Ordinary Telegram text is pasted literally into the selected pane, followed
-  by Enter. `/send TEXT` is an explicit equivalent; other slash commands such
-  as `/review` are passed through to the selected agent.
-- When an agent finishes, the same inbox message is updated to show that pane.
+```text
+My tmux agents
+├── Control
+├── main · codex #0
+├── tig-mining · codex #1
+└── tr · codex #1
+```
 
-Codex and Claude `Stop` hooks expose `last_assistant_message`; the status hooks
-cache that exact response per pane. While an agent is still working—or until an
-existing agent completes its first turn after installation—the bridge falls
-back to the latest visible pane output.
+Text sent inside an agent topic is pasted literally into only that topic's tmux
+pane, followed by Enter. `/send TEXT` is an explicit equivalent; other slash
+commands such as `/review` pass through to the agent. A successful delivery gets
+a 👍 reaction.
 
-The bridge only accepts a private chat from the configured Telegram user ID. It
-does not offer shell execution: incoming text goes through a private tmux paste
-buffer, and the pane ID is revalidated immediately before the paste.
+When an agent finishes, its `Stop` hook caches the exact
+`last_assistant_message`. The bridge posts that reply as a fresh Telegram
+message in the corresponding topic, producing a normal topic notification.
+While an agent is working—or until an older running agent completes its first
+post-installation turn—the bridge can fall back to its visible pane output.
 
-### Set up the bot
+Topic mappings use tmux session/window/pane position plus agent type, rather
+than the temporary tmux pane ID. If tmux recreates a pane, its existing topic
+and history are reused. When an agent exits, the bridge waits 60 seconds and
+closes the topic without deleting it. Returning agents reopen their old topic.
 
-1. In Telegram, use `@BotFather` to create a private bot and copy its token.
-2. Install the local configuration and user service:
+The bridge accepts messages only from the configured Telegram user ID and only
+uses the private forum group registered with `/setup`. It rejects groups with a
+public username. It does not offer shell execution: incoming text goes through
+a private tmux paste buffer, and the pane is revalidated immediately before the
+paste.
+
+### Set up the bot and private group
+
+1. In Telegram, open `@BotFather`, send `/newbot`, and create one bot for the
+   whole tmux group. Copy its authentication token.
+
+2. Install the local private configuration and user service:
 
    ```bash
    ~/my-tmux/scripts/setup-telegram-bridge.sh
@@ -88,19 +104,43 @@ buffer, and the pane ID is revalidated immediately before the paste.
    systemctl --user enable --now tmux-telegram-bridge
    ```
 
-4. Send `/id` to the bot. Put the returned user ID in
-   `TMUX_TELEGRAM_ALLOWED_USER_ID`, then reload the private configuration:
+4. Open a direct chat with the new bot and send `/id`. Put the returned number
+   in `TMUX_TELEGRAM_ALLOWED_USER_ID`, then restart:
 
    ```bash
    systemctl --user restart tmux-telegram-bridge
    ```
 
-5. Send `/agents`. The bot now shows only the live agent panes detected by the
-   same process-liveness rules as the sidebar and switcher.
+5. Create a new **private group** in Telegram and add the bot. The finished
+   group must contain exactly two members: you and the bot. If Telegram made
+   you add another person while creating it, remove that person before setup.
+   Do not assign the group a public username or share its invite link.
 
-The real token and user ID live outside this repository in a mode-`0600` file.
-Never add them to Git. If this machine must keep the bridge running after every
-login session closes, enable the user service manager persistently once:
+6. In the group settings, enable **Topics**. Promote the bot to
+   **Administrator** and grant **Manage Topics** permission. No other admin
+   permissions are required. If Telegram will not let you add the bot, enable
+   group joining for it through BotFather's `/setjoingroups` setting.
+
+7. In the group's `General` topic, send:
+
+   ```text
+   /setup
+   ```
+
+   The bridge verifies that the group is private, is a forum, and granted the
+   bot the required permission. It renames `General` to `Control` and creates
+   one topic for every currently live agent pane.
+
+The Control topic supports:
+
+- `/sync` — immediately reconcile topics with live tmux agents.
+- `/status` — list the live agents and their states.
+- `/help` — show the short command guide.
+
+The real token, Telegram user ID, group ID, and topic mappings are never
+committed. The token/user ID live in a mode-`0600` environment file; the group
+and topic IDs are learned through `/setup` and stored in a mode-`0600` state
+file. To keep the service running after every login closes:
 
 ```bash
 sudo loginctl enable-linger "$(id -un)"

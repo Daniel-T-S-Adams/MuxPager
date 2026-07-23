@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private Telegram inbox for live Codex and Claude panes in tmux."""
+"""Private Telegram forum topics for live Codex and Claude panes in tmux."""
 
 from __future__ import annotations
 
@@ -45,6 +45,24 @@ class AgentPane:
     def label(self) -> str:
         window = self.window_name or f"window {self.window_index}"
         return f"{self.session} › {window} › {self.agent} #{self.pane_index}"
+
+    @property
+    def topic_key(self) -> str:
+        # Pane IDs are reused when a tmux server restarts. Session/window/pane
+        # position plus agent type is stable enough to reopen the existing
+        # Telegram topic while still separating two agents in one window.
+        return "\x1f".join(
+            (self.session, self.window_index, self.pane_index, self.agent)
+        )
+
+    @property
+    def topic_name(self) -> str:
+        parts = [self.session]
+        window = self.window_name.strip()
+        if window and window.casefold() != self.agent.casefold():
+            parts.append(window)
+        parts.append(f"{self.agent} #{self.pane_index}")
+        return trim_label(" · ".join(parts), 128)
 
 
 def parse_agent_rows(output: str) -> list[AgentPane]:
@@ -340,6 +358,7 @@ class Bridge:
         state_path: Path,
         poll_timeout: int = 5,
         notify: bool = True,
+        close_after: int = 60,
     ) -> None:
         self.telegram = telegram
         self.tmux = tmux
@@ -347,7 +366,9 @@ class Bridge:
         self.state_path = state_path
         self.poll_timeout = max(1, min(poll_timeout, 25))
         self.notify = notify
+        self.close_after = max(0, close_after)
         self.state = self._load_state()
+        self._bot_id: int | None = None
 
     def _load_state(self) -> dict[str, Any]:
         try:
@@ -363,10 +384,19 @@ class Bridge:
         os.chmod(temporary, 0o600)
         os.replace(temporary, self.state_path)
 
-    def _is_authorized(self, user_id: Any, chat: dict[str, Any]) -> bool:
-        if self.allowed_user_id is None:
-            return False
-        return user_id == self.allowed_user_id and chat.get("type") == "private"
+    def _is_authorized(self, user_id: Any) -> bool:
+        return self.allowed_user_id is not None and user_id == self.allowed_user_id
+
+    def _group_chat_id(self) -> int | None:
+        chat_id = self.state.get("group_chat_id")
+        return chat_id if isinstance(chat_id, int) else None
+
+    def _topics(self) -> dict[str, dict[str, Any]]:
+        topics = self.state.get("topics")
+        if not isinstance(topics, dict):
+            topics = {}
+            self.state["topics"] = topics
+        return topics
 
     def _pairing_reply(self, message: dict[str, Any]) -> None:
         chat = message.get("chat") or {}
@@ -376,130 +406,423 @@ class Bridge:
         text = (
             "This bridge is in pairing mode and cannot expose tmux yet.\n\n"
             f"Your Telegram user ID: {sender.get('id')}\n"
-            f"This private chat ID: {chat.get('id')}\n\n"
-            "Set TMUX_TELEGRAM_ALLOWED_USER_ID to your user ID, then restart the service."
+            "\nSet TMUX_TELEGRAM_ALLOWED_USER_ID to that user ID, then restart "
+            "the service. After that, create the private Topics group and send "
+            "/setup in its General topic."
         )
         self.telegram.call("sendMessage", {"chat_id": chat["id"], "text": text})
 
-    def _agent_keyboard(self, panes: list[AgentPane]) -> dict[str, Any]:
-        rows = []
-        for pane in panes:
-            label = f"{status_icon(pane.status)} {pane.label}"
-            rows.append(
-                [{"text": trim_label(label, 58), "callback_data": f"p:{pane.pane_id}"}]
-            )
-        rows.append([{"text": "↻ Refresh", "callback_data": "list"}])
-        return {"inline_keyboard": rows}
-
-    def _pane_keyboard(self, pane: AgentPane, panes: list[AgentPane]) -> dict[str, Any]:
-        rows = [
-            [
-                {"text": "← Agents", "callback_data": "list"},
-                {"text": "↻ Refresh", "callback_data": f"r:{pane.pane_id}"},
-            ]
-        ]
-        if len(panes) > 1:
-            rows.append(
-                [
-                    {"text": "◀ Previous", "callback_data": f"b:{pane.pane_id}"},
-                    {"text": "Next ▶", "callback_data": f"n:{pane.pane_id}"},
-                ]
-            )
-        return {"inline_keyboard": rows}
-
-    def _upsert_view(
+    def _send_message(
         self,
         chat_id: int,
         text: str,
-        keyboard: dict[str, Any],
-        message_id: int | None = None,
-    ) -> int:
+        thread_id: int | None = None,
+        disable_notification: bool = False,
+    ) -> dict[str, Any]:
         text = trim_middle(text, TELEGRAM_TEXT_LIMIT)
-        if message_id is None and self.state.get("dashboard_chat_id") == chat_id:
-            stored = self.state.get("dashboard_message_id")
-            if isinstance(stored, int):
-                message_id = stored
+        params: dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": text,
+            "disable_notification": disable_notification,
+        }
+        if thread_id is not None:
+            params["message_thread_id"] = thread_id
+        result = self.telegram.call("sendMessage", params)
+        if not isinstance(result, dict):
+            raise TelegramError("Telegram sendMessage returned no Message")
+        return result
 
-        if message_id is not None:
-            try:
-                result = self.telegram.call(
-                    "editMessageText",
-                    {
-                        "chat_id": chat_id,
-                        "message_id": message_id,
-                        "text": text,
-                        "reply_markup": keyboard,
-                    },
-                )
-                if isinstance(result, dict):
-                    message_id = int(result.get("message_id", message_id))
-            except TelegramError as exc:
-                if "message is not modified" not in str(exc).lower():
-                    message_id = None
+    def _reply(self, message: dict[str, Any], text: str) -> None:
+        chat = message.get("chat") or {}
+        thread_id = message.get("message_thread_id")
+        self._send_message(
+            int(chat["id"]),
+            text,
+            int(thread_id) if isinstance(thread_id, int) else None,
+            disable_notification=True,
+        )
 
-        if message_id is None:
-            result = self.telegram.call(
-                "sendMessage",
-                {"chat_id": chat_id, "text": text, "reply_markup": keyboard},
+    def _get_bot_id(self) -> int:
+        if self._bot_id is None:
+            identity = self.telegram.call("getMe")
+            if not isinstance(identity, dict) or not isinstance(identity.get("id"), int):
+                raise TelegramError("Telegram getMe returned no bot id")
+            self._bot_id = identity["id"]
+        return self._bot_id
+
+    def _configure_group(self, message: dict[str, Any]) -> None:
+        chat = message.get("chat") or {}
+        chat_id = int(chat["id"])
+        full_chat = self.telegram.call("getChat", {"chat_id": chat_id})
+        if not isinstance(full_chat, dict):
+            self._reply(message, "Telegram returned no group information.")
+            return
+        if full_chat.get("type") != "supergroup" or not full_chat.get("is_forum"):
+            self._reply(
+                message,
+                "This must be a supergroup with Topics enabled. Enable Topics "
+                "in the group settings, then send /setup again.",
             )
-            if not isinstance(result, dict) or not isinstance(result.get("message_id"), int):
-                raise TelegramError("Telegram sendMessage returned no message id")
-            message_id = result["message_id"]
-
-        self.state["dashboard_chat_id"] = chat_id
-        self.state["dashboard_message_id"] = message_id
-        self._save_state()
-        return message_id
-
-    def show_dashboard(
-        self, chat_id: int, message_id: int | None = None, notice: str = ""
-    ) -> None:
-        panes = self.tmux.agents()
-        selected = self.state.get("selected_pane")
-        selected_pane = next((pane for pane in panes if pane.pane_id == selected), None)
-        lines = ["🤖 tmux agent inbox"]
-        if notice:
-            lines.extend(["", notice])
-        lines.extend(["", f"{len(panes)} live agent pane(s). Tap one to read it."])
-        if selected_pane:
-            lines.append(f"Messages currently go to: {selected_pane.label}")
-        else:
-            lines.append("Select an agent before sending a message.")
-        lines.extend(["", "Ordinary Telegram text is pasted literally into the selected pane and Enter is sent."])
-        self._upsert_view(chat_id, "\n".join(lines), self._agent_keyboard(panes), message_id)
-
-    def show_agent(
-        self,
-        chat_id: int,
-        pane_id: str,
-        message_id: int | None = None,
-        notice: str = "",
-    ) -> None:
-        panes = self.tmux.agents()
-        pane = next((candidate for candidate in panes if candidate.pane_id == pane_id), None)
-        if pane is None:
-            self.state.pop("selected_pane", None)
-            self._save_state()
-            self.show_dashboard(chat_id, message_id, "That agent pane is no longer running.")
+            return
+        if full_chat.get("username"):
+            self._reply(
+                message,
+                "This group has a public username. Remove it first: the tmux "
+                "agent group must remain private.",
+            )
+            return
+        member_count = self.telegram.call(
+            "getChatMemberCount", {"chat_id": chat_id}
+        )
+        if not isinstance(member_count, int) or isinstance(member_count, bool):
+            self._reply(message, "Telegram returned no valid group member count.")
+            return
+        if member_count != 2:
+            self._reply(
+                message,
+                "For privacy, this group must contain exactly two members: "
+                "you and this bot. Remove every other member, then send /setup "
+                "again.",
+            )
             return
 
-        self.state["selected_pane"] = pane.pane_id
-        self._save_state()
-        output, source = self.tmux.last_output(pane)
-        heading = (
-            f"{status_icon(pane.status)} {pane.label}\n"
-            f"Status: {status_text(pane.status)}\n"
-            f"{source}:"
+        member = self.telegram.call(
+            "getChatMember", {"chat_id": chat_id, "user_id": self._get_bot_id()}
         )
-        if notice:
-            heading = f"{notice}\n\n{heading}"
+        if not isinstance(member, dict) or member.get("status") not in {
+            "administrator",
+            "creator",
+        }:
+            self._reply(
+                message,
+                "Make the bot a group administrator with Manage Topics "
+                "permission, then send /setup again.",
+            )
+            return
+        if member.get("status") != "creator" and not member.get("can_manage_topics"):
+            self._reply(
+                message,
+                "The bot is an administrator but does not have Manage Topics "
+                "permission. Grant it and send /setup again.",
+            )
+            return
+
+        previous_group = self._group_chat_id()
+        if previous_group != chat_id:
+            # Topic IDs are local to a group; never carry mappings across.
+            self.state["topics"] = {}
+            self.state.pop("agent_status", None)
+            self.state.pop("message_versions", None)
+            self.state["topic_sync_initialized"] = False
+        self.state["group_chat_id"] = chat_id
+        self.state["group_title"] = str(full_chat.get("title") or "tmux agents")
+        self._save_state()
+
+        try:
+            self.telegram.call(
+                "editGeneralForumTopic", {"chat_id": chat_id, "name": "Control"}
+            )
+        except TelegramError as exc:
+            LOG.warning("Could not rename the General topic: %s", exc)
+
+        self._reply(
+            message,
+            "✓ Private tmux agent group connected.\n\n"
+            "Creating one topic per live agent pane. Use /sync here whenever "
+            "you want to force an immediate reconciliation.",
+        )
+        self._sync_topics()
+
+    @staticmethod
+    def _topic_color(agent: str) -> int:
+        return {
+            "codex": 0x6FB9F0,
+            "claude": 0xFFD67E,
+            "devin": 0xCB86DB,
+        }.get(agent, 0x8EEE98)
+
+    @staticmethod
+    def _topic_is_closed_error(exc: TelegramError) -> bool:
+        message = str(exc).lower()
+        return "topic_closed" in message or "topic closed" in message
+
+    @staticmethod
+    def _topic_is_missing_error(exc: TelegramError) -> bool:
+        message = str(exc).lower()
+        return any(
+            marker in message
+            for marker in (
+                "message thread not found",
+                "message_thread_invalid",
+                "topic_id_invalid",
+                "topic not found",
+            )
+        )
+
+    def _ensure_topic(self, pane: AgentPane) -> dict[str, Any]:
+        chat_id = self._group_chat_id()
+        if chat_id is None:
+            raise TelegramError("No private topic group is configured")
+        topics = self._topics()
+        record = topics.get(pane.topic_key)
+
+        if isinstance(record, dict) and isinstance(record.get("thread_id"), int):
+            thread_id = int(record["thread_id"])
+            if record.get("closed"):
+                try:
+                    self.telegram.call(
+                        "reopenForumTopic",
+                        {"chat_id": chat_id, "message_thread_id": thread_id},
+                    )
+                except TelegramError as exc:
+                    if self._topic_is_missing_error(exc):
+                        topics.pop(pane.topic_key, None)
+                        record = None
+                    elif "not modified" not in str(exc).lower():
+                        raise
+                else:
+                    record["closed"] = False
+                    self._send_message(
+                        chat_id,
+                        f"↩ Agent returned: {pane.label}",
+                        thread_id,
+                        disable_notification=True,
+                    )
+
+        if not isinstance(record, dict) or not isinstance(record.get("thread_id"), int):
+            created = self.telegram.call(
+                "createForumTopic",
+                {
+                    "chat_id": chat_id,
+                    "name": pane.topic_name,
+                    "icon_color": self._topic_color(pane.agent),
+                },
+            )
+            if not isinstance(created, dict) or not isinstance(
+                created.get("message_thread_id"), int
+            ):
+                raise TelegramError("Telegram createForumTopic returned no topic id")
+            record = {
+                "thread_id": int(created["message_thread_id"]),
+                "name": pane.topic_name,
+                "pane_id": pane.pane_id,
+                "label": pane.label,
+                "closed": False,
+            }
+            topics[pane.topic_key] = record
+            self._save_state()
+            self._send_message(
+                chat_id,
+                f"🤖 Connected to {pane.label}\n"
+                f"Status: {status_text(pane.status)}\n\n"
+                "Messages in this topic go only to this tmux agent pane.",
+                int(record["thread_id"]),
+                disable_notification=True,
+            )
+
+        if record.get("name") != pane.topic_name:
+            try:
+                self.telegram.call(
+                    "editForumTopic",
+                    {
+                        "chat_id": chat_id,
+                        "message_thread_id": int(record["thread_id"]),
+                        "name": pane.topic_name,
+                    },
+                )
+            except TelegramError as exc:
+                LOG.warning("Could not rename agent topic: %s", exc)
+            else:
+                record["name"] = pane.topic_name
+
+        record["pane_id"] = pane.pane_id
+        record["label"] = pane.label
+        record["closed"] = False
+        record.pop("missing_since", None)
+        self._save_state()
+        return record
+
+    def _topic_for_thread(
+        self, thread_id: int
+    ) -> tuple[str, dict[str, Any]] | tuple[None, None]:
+        for key, record in self._topics().items():
+            if isinstance(record, dict) and record.get("thread_id") == thread_id:
+                return key, record
+        return None, None
+
+    def _send_to_agent_topic(
+        self,
+        pane: AgentPane,
+        text: str,
+        disable_notification: bool = False,
+    ) -> None:
+        chat_id = self._group_chat_id()
+        if chat_id is None:
+            return
+        record = self._ensure_topic(pane)
+        try:
+            self._send_message(
+                chat_id,
+                text,
+                int(record["thread_id"]),
+                disable_notification=disable_notification,
+            )
+            return
+        except TelegramError as exc:
+            if self._topic_is_closed_error(exc):
+                self.telegram.call(
+                    "reopenForumTopic",
+                    {
+                        "chat_id": chat_id,
+                        "message_thread_id": int(record["thread_id"]),
+                    },
+                )
+                record["closed"] = False
+                self._save_state()
+            elif self._topic_is_missing_error(exc):
+                self._topics().pop(pane.topic_key, None)
+                self._save_state()
+                record = self._ensure_topic(pane)
+            else:
+                raise
+        self._send_message(
+            chat_id,
+            text,
+            int(record["thread_id"]),
+            disable_notification=disable_notification,
+        )
+
+    def _close_missing_topics(
+        self, live_keys: set[str], now: float
+    ) -> None:
+        chat_id = self._group_chat_id()
+        if chat_id is None:
+            return
+        for key, record in list(self._topics().items()):
+            if key in live_keys or not isinstance(record, dict) or record.get("closed"):
+                continue
+            missing_since = record.get("missing_since")
+            if not isinstance(missing_since, (int, float)):
+                missing_since = now
+                record["missing_since"] = missing_since
+                self._save_state()
+            if now - float(missing_since) < self.close_after:
+                continue
+            thread_id = record.get("thread_id")
+            if not isinstance(thread_id, int):
+                continue
+            try:
+                self._send_message(
+                    chat_id,
+                    "Agent process exited. Closing this topic; it will reopen "
+                    "automatically if the same agent returns.",
+                    thread_id,
+                    disable_notification=True,
+                )
+                self.telegram.call(
+                    "closeForumTopic",
+                    {"chat_id": chat_id, "message_thread_id": thread_id},
+                )
+            except TelegramError as exc:
+                if (
+                    self._topic_is_missing_error(exc)
+                    or self._topic_is_closed_error(exc)
+                    or "not modified" in str(exc).lower()
+                ):
+                    record["closed"] = True
+                else:
+                    LOG.warning("Could not close stale agent topic: %s", exc)
+                    continue
+            else:
+                record["closed"] = True
+            self._save_state()
+
+    def _post_completion(self, pane: AgentPane) -> None:
+        output, source = self.tmux.last_output(pane)
+        heading = f"❓ Ready for you\n{source}:"
         available = TELEGRAM_TEXT_LIMIT - len(heading) - 2
         text = heading + "\n\n" + trim_middle(output, max(200, available))
-        self._upsert_view(chat_id, text, self._pane_keyboard(pane, panes), message_id)
+        self._send_to_agent_topic(pane, text)
 
-    def _selected_agent(self) -> AgentPane | None:
-        selected = self.state.get("selected_pane")
-        return next((pane for pane in self.tmux.agents() if pane.pane_id == selected), None)
+    def _sync_topics(self) -> int:
+        if self._group_chat_id() is None:
+            return 0
+        try:
+            panes = self.tmux.agents()
+        except TmuxError as exc:
+            LOG.warning("Agent topic refresh failed: %s", exc)
+            return 0
+
+        live_keys = {pane.topic_key for pane in panes}
+        for pane in panes:
+            try:
+                self._ensure_topic(pane)
+            except TelegramError as exc:
+                LOG.warning("Could not create/reopen topic for %s: %s", pane.label, exc)
+
+        self._close_missing_topics(live_keys, time.time())
+
+        current_status = {pane.topic_key: pane.status for pane in panes}
+        current_versions = {
+            pane.topic_key: self.tmux.message_version(pane) for pane in panes
+        }
+        previous_status = self.state.get("agent_status", {})
+        previous_versions = self.state.get("message_versions", {})
+        initialized = bool(self.state.get("topic_sync_initialized"))
+
+        completed: list[AgentPane] = []
+        if initialized:
+            for pane in panes:
+                newly_completed = (
+                    previous_status.get(pane.topic_key) == "working"
+                    and pane.status in {"done", "ask"}
+                )
+                version = current_versions[pane.topic_key]
+                new_message = (
+                    bool(version)
+                    and pane.topic_key in previous_versions
+                    and version != previous_versions.get(pane.topic_key)
+                    and pane.status in {"done", "ask"}
+                )
+                if newly_completed or new_message:
+                    completed.append(pane)
+
+        self.state["agent_status"] = current_status
+        self.state["message_versions"] = current_versions
+        self.state["topic_sync_initialized"] = True
+        self._save_state()
+
+        if self.notify:
+            for pane in completed:
+                try:
+                    self._post_completion(pane)
+                except (TelegramError, TmuxError) as exc:
+                    LOG.warning("Could not publish agent reply: %s", exc)
+        return len(panes)
+
+    def _status_report(self) -> str:
+        panes = self.tmux.agents()
+        if not panes:
+            return "No live Codex or Claude panes."
+        return "\n".join(
+            f"{status_icon(pane.status)} {pane.topic_name} — {status_text(pane.status)}"
+            for pane in panes
+        )
+
+    def _acknowledge(self, message: dict[str, Any]) -> None:
+        chat = message.get("chat") or {}
+        try:
+            self.telegram.call(
+                "setMessageReaction",
+                {
+                    "chat_id": int(chat["id"]),
+                    "message_id": int(message["message_id"]),
+                    "reaction": [{"type": "emoji", "emoji": "👍"}],
+                },
+            )
+        except (TelegramError, KeyError, TypeError, ValueError):
+            # A group may have reactions disabled. Delivery still succeeded.
+            pass
 
     def _handle_message(self, message: dict[str, Any]) -> None:
         chat = message.get("chat") or {}
@@ -510,138 +833,90 @@ class Bridge:
         if self.allowed_user_id is None:
             self._pairing_reply(message)
             return
-        if not self._is_authorized(sender.get("id"), chat):
+        if not self._is_authorized(sender.get("id")):
             LOG.warning("Ignored an unauthorized Telegram message")
             return
 
         chat_id = int(chat["id"])
-        self.state["authorized_chat_id"] = chat_id
-        self._save_state()
-        command, _, remainder = text.partition(" ")
-        command = command.split("@", 1)[0].lower()
+        parts = text.split(maxsplit=1)
+        command = parts[0].split("@", 1)[0].lower()
+        remainder = parts[1] if len(parts) == 2 else ""
 
-        if command in {"/start", "/agents", "/sessions"}:
-            self.show_dashboard(chat_id)
-            return
-        if command in {"/tail", "/refresh"}:
-            pane = self._selected_agent()
-            if pane:
-                self.show_agent(chat_id, pane.pane_id)
+        if chat.get("type") == "private":
+            if command == "/id":
+                self._send_message(
+                    chat_id, f"Your Telegram user ID: {sender.get('id')}"
+                )
             else:
-                self.show_dashboard(chat_id, notice="Select an agent first.")
+                self._send_message(
+                    chat_id,
+                    "This bot uses a private group with Topics.\n\n"
+                    "Create the group, enable Topics, add this bot as an "
+                    "administrator with Manage Topics permission, then send "
+                    "/setup in the group's General topic.",
+                )
             return
-        if command == "/id":
-            self.telegram.call(
-                "sendMessage",
-                {"chat_id": chat_id, "text": f"Your Telegram user ID: {sender.get('id')}"},
+
+        if chat.get("type") != "supergroup":
+            return
+        if command == "/setup":
+            self._configure_group(message)
+            return
+        if self._group_chat_id() != chat_id:
+            self._reply(
+                message,
+                "This is not the configured private tmux group. Send /setup "
+                "here if you intend to move the bridge to this group.",
             )
             return
+        if command in {"/sync", "/agents", "/sessions"}:
+            count = self._sync_topics()
+            self._reply(message, f"✓ Synchronized {count} live agent topic(s).")
+            return
+        if command == "/status":
+            self._reply(message, self._status_report())
+            return
         if command == "/help":
-            self.telegram.call(
-                "sendMessage",
-                {
-                    "chat_id": chat_id,
-                    "text": (
-                        "/agents — show live agent panes\n"
-                        "/tail — refresh the selected pane\n"
-                        "/send TEXT — send TEXT to the selected agent\n"
-                        "Any other text, including agent slash commands, is sent literally."
-                    ),
-                },
+            self._reply(
+                message,
+                "/sync — reconcile live agent topics\n"
+                "/status — show agent states\n"
+                "/send TEXT — send TEXT to this topic's agent\n\n"
+                "Ordinary text and agent slash commands are sent literally to "
+                "the agent mapped to the current topic.",
+            )
+            return
+
+        thread_id = message.get("message_thread_id")
+        if not isinstance(thread_id, int):
+            self._reply(message, "Send agent messages inside an agent topic.")
+            return
+        key, record = self._topic_for_thread(thread_id)
+        if key is None or record is None:
+            self._reply(
+                message,
+                "This topic is not mapped to a tmux agent. Use /sync in the "
+                "Control topic; bot-created agent topics are mapped automatically.",
             )
             return
 
         outgoing = remainder if command == "/send" else text
         if not outgoing.strip():
-            self.show_dashboard(chat_id, notice="There was no text to send.")
+            self._reply(message, "There was no text to send.")
             return
-        pane = self._selected_agent()
+        pane = next(
+            (candidate for candidate in self.tmux.agents() if candidate.topic_key == key),
+            None,
+        )
         if pane is None:
-            self.show_dashboard(chat_id, notice="Select an agent before sending a message.")
+            self._reply(
+                message,
+                "That agent is no longer running. This topic will close "
+                "automatically unless it returns.",
+            )
             return
         self.tmux.send_message(pane.pane_id, outgoing)
-        self.show_agent(chat_id, pane.pane_id, notice=f"✓ Message sent to {pane.label}")
-
-    def _handle_callback(self, callback: dict[str, Any]) -> None:
-        sender = callback.get("from") or {}
-        message = callback.get("message") or {}
-        chat = message.get("chat") or {}
-        if not self._is_authorized(sender.get("id"), chat):
-            LOG.warning("Ignored an unauthorized Telegram callback")
-            return
-
-        callback_id = callback.get("id")
-        if callback_id:
-            self.telegram.call("answerCallbackQuery", {"callback_query_id": callback_id})
-        chat_id = int(chat["id"])
-        message_id = int(message["message_id"])
-        self.state["authorized_chat_id"] = chat_id
-        data = str(callback.get("data") or "")
-
-        if data == "list":
-            self.show_dashboard(chat_id, message_id)
-            return
-        action, separator, pane_id = data.partition(":")
-        if not separator or action not in {"p", "r", "b", "n"}:
-            return
-        if action in {"p", "r"}:
-            self.show_agent(chat_id, pane_id, message_id)
-            return
-
-        panes = self.tmux.agents()
-        current = next((index for index, pane in enumerate(panes) if pane.pane_id == pane_id), None)
-        if current is None or not panes:
-            self.show_dashboard(chat_id, message_id, "That agent pane is no longer running.")
-            return
-        delta = -1 if action == "b" else 1
-        self.show_agent(chat_id, panes[(current + delta) % len(panes)].pane_id, message_id)
-
-    def _check_notifications(self) -> None:
-        try:
-            panes = self.tmux.agents()
-        except TmuxError as exc:
-            LOG.warning("Agent status refresh failed: %s", exc)
-            return
-        current_status = {pane.pane_id: pane.status for pane in panes}
-        current_versions = {pane.pane_id: self.tmux.message_version(pane) for pane in panes}
-        previous_status = self.state.get("agent_status", {})
-        previous_versions = self.state.get("message_versions", {})
-        initialized = bool(self.state.get("agent_status_initialized"))
-
-        completed: list[AgentPane] = []
-        if initialized:
-            for pane in panes:
-                newly_completed = (
-                    previous_status.get(pane.pane_id) == "working"
-                    and pane.status in {"done", "ask"}
-                )
-                new_message = (
-                    bool(current_versions[pane.pane_id])
-                    and current_versions[pane.pane_id] != previous_versions.get(pane.pane_id)
-                    and pane.status in {"done", "ask"}
-                )
-                if newly_completed or new_message:
-                    completed.append(pane)
-
-        self.state["agent_status"] = current_status
-        self.state["message_versions"] = current_versions
-        self.state["agent_status_initialized"] = True
-        self._save_state()
-
-        chat_id = self.state.get("authorized_chat_id")
-        if not self.notify or not isinstance(chat_id, int):
-            return
-        # Keep Telegram as a one-message inbox: simultaneous completions update
-        # the same dashboard, leaving the most recent waiting agent visible.
-        for pane in completed:
-            try:
-                self.show_agent(
-                    chat_id,
-                    pane.pane_id,
-                    notice=f"❓ {pane.label} is ready for you",
-                )
-            except (TelegramError, TmuxError) as exc:
-                LOG.warning("Could not publish agent notification: %s", exc)
+        self._acknowledge(message)
 
     def run(self) -> None:
         if self.allowed_user_id is None:
@@ -654,7 +929,7 @@ class Bridge:
                     {
                         "offset": int(self.state.get("update_offset", 0)),
                         "timeout": self.poll_timeout,
-                        "allowed_updates": ["message", "callback_query"],
+                        "allowed_updates": ["message"],
                     },
                     http_timeout=self.poll_timeout + 10,
                 )
@@ -665,11 +940,9 @@ class Bridge:
                     try:
                         if isinstance(update.get("message"), dict):
                             self._handle_message(update["message"])
-                        elif isinstance(update.get("callback_query"), dict):
-                            self._handle_callback(update["callback_query"])
                     except (TelegramError, TmuxError) as exc:
                         LOG.warning("Telegram update could not be handled: %s", exc)
-                self._check_notifications()
+                self._sync_topics()
                 backoff = 1
             except TelegramError as exc:
                 LOG.warning("%s; retrying in %ss", exc, backoff)
@@ -724,6 +997,7 @@ def main() -> int:
         state_path,
         poll_timeout=int(os.environ.get("TMUX_TELEGRAM_POLL_TIMEOUT", "5")),
         notify=env_bool("TMUX_TELEGRAM_NOTIFY", True),
+        close_after=int(os.environ.get("TMUX_TELEGRAM_CLOSE_AFTER", "60")),
     )
     bridge.run()
     return 0

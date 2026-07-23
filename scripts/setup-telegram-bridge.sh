@@ -21,7 +21,10 @@ echo "Telegram bridge service installed."
 echo "1. Edit $ENV_FILE and set TMUX_TELEGRAM_BOT_TOKEN."
 echo "2. Start pairing mode: systemctl --user enable --now tmux-telegram-bridge"
 echo "3. Send /id to the bot, put that ID in the env file, then restart the service."
+echo "4. Create a private Telegram group, enable Topics, and add the bot as an"
+echo "   administrator with Manage Topics permission."
+echo "5. Send /setup in the group's General topic."
 if command -v loginctl >/dev/null 2>&1 && \
    [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || true)" != "yes" ]; then
-    echo "4. To keep it running after logout: sudo loginctl enable-linger \"$(id -un)\""
+    echo "6. To keep it running after logout: sudo loginctl enable-linger \"$(id -un)\""
 fi

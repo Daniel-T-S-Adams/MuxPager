@@ -29,6 +29,7 @@ class TelegramBridgeTests(unittest.TestCase):
         self.assertEqual(1, len(panes))
         self.assertEqual("%2", panes[0].pane_id)
         self.assertEqual("tr › codex › codex #1", panes[0].label)
+        self.assertEqual("tr · codex #1", panes[0].topic_name)
 
     def test_clean_capture_removes_prompt_and_footer(self) -> None:
         captured = "Old line\n\n• Final answer\n─ Worked for 2m ─\n\n› Run /review\n\ngpt-5.6-sol"
@@ -69,6 +70,222 @@ class TelegramBridgeTests(unittest.TestCase):
         self.assertFalse(any("shell=True" in str(call) for call in calls))
         self.assertIn("paste-buffer", [call[1] for call in calls])
         self.assertEqual("send-keys", calls[-1][1])
+
+
+class FakeTelegram:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self.next_thread_id = 100
+        self.next_message_id = 1000
+        self.member_count = 2
+
+    def call(self, method, params=None, http_timeout=30):
+        params = dict(params or {})
+        self.calls.append((method, params))
+        if method == "getMe":
+            return {"id": 9001, "is_bot": True}
+        if method == "getChat":
+            return {
+                "id": params["chat_id"],
+                "type": "supergroup",
+                "title": "My tmux agents",
+                "is_forum": True,
+            }
+        if method == "getChatMember":
+            return {
+                "status": "administrator",
+                "can_manage_topics": True,
+            }
+        if method == "getChatMemberCount":
+            return self.member_count
+        if method == "createForumTopic":
+            self.next_thread_id += 1
+            return {
+                "message_thread_id": self.next_thread_id,
+                "name": params["name"],
+            }
+        if method == "sendMessage":
+            self.next_message_id += 1
+            return {
+                "message_id": self.next_message_id,
+                "chat": {"id": params["chat_id"]},
+                "text": params["text"],
+            }
+        return True
+
+
+class FakeTmux:
+    def __init__(self, panes) -> None:
+        self.panes = list(panes)
+        self.versions = {pane.topic_key: "v1" for pane in panes}
+        self.outputs = {
+            pane.topic_key: ("Exact final response.", "Last agent message")
+            for pane in panes
+        }
+        self.sent: list[tuple[str, str]] = []
+
+    def agents(self):
+        return list(self.panes)
+
+    def message_version(self, pane):
+        return self.versions.get(pane.topic_key, "")
+
+    def last_output(self, pane):
+        return self.outputs[pane.topic_key]
+
+    def send_message(self, pane_id, text):
+        self.sent.append((pane_id, text))
+
+
+class ForumTopicBridgeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.pane = bridge.AgentPane(
+            "%2", "tr", "0", "codex", "1", "codex", "working"
+        )
+        self.telegram = FakeTelegram()
+        self.tmux = FakeTmux([self.pane])
+        self.instance = bridge.Bridge(
+            self.telegram,
+            self.tmux,
+            allowed_user_id=42,
+            state_path=Path(self.temporary.name) / "state.json",
+            close_after=0,
+        )
+        self.control_message = {
+            "message_id": 1,
+            "from": {"id": 42},
+            "chat": {
+                "id": -100123,
+                "type": "supergroup",
+                "title": "My tmux agents",
+                "is_forum": True,
+            },
+            "message_thread_id": 1,
+            "text": "/setup",
+        }
+
+    def configure(self) -> int:
+        self.instance._handle_message(self.control_message)
+        record = self.instance.state["topics"][self.pane.topic_key]
+        return record["thread_id"]
+
+    def test_setup_creates_one_topic_for_each_live_agent(self) -> None:
+        thread_id = self.configure()
+
+        self.assertEqual(-100123, self.instance.state["group_chat_id"])
+        self.assertEqual(101, thread_id)
+        methods = [method for method, _ in self.telegram.calls]
+        self.assertIn("editGeneralForumTopic", methods)
+        self.assertIn("createForumTopic", methods)
+        create = next(
+            params
+            for method, params in self.telegram.calls
+            if method == "createForumTopic"
+        )
+        self.assertEqual("tr · codex #1", create["name"])
+
+    def test_setup_rejects_a_group_with_other_members(self) -> None:
+        self.telegram.member_count = 3
+
+        self.instance._handle_message(self.control_message)
+
+        self.assertIsNone(self.instance._group_chat_id())
+        self.assertNotIn(
+            "createForumTopic", [method for method, _ in self.telegram.calls]
+        )
+        warning = next(
+            params["text"]
+            for method, params in self.telegram.calls
+            if method == "sendMessage"
+        )
+        self.assertIn("exactly two members", warning)
+
+    def test_topic_message_is_routed_only_to_its_mapped_pane(self) -> None:
+        thread_id = self.configure()
+        self.telegram.calls.clear()
+        message = {
+            **self.control_message,
+            "message_id": 2,
+            "message_thread_id": thread_id,
+            "text": "Please run the tests",
+        }
+
+        self.instance._handle_message(message)
+
+        self.assertEqual([("%2", "Please run the tests")], self.tmux.sent)
+        self.assertIn("setMessageReaction", [method for method, _ in self.telegram.calls])
+
+    def test_completed_reply_is_posted_as_a_fresh_topic_message(self) -> None:
+        thread_id = self.configure()
+        self.telegram.calls.clear()
+        done = bridge.AgentPane(
+            "%2", "tr", "0", "codex", "1", "codex", "done"
+        )
+        self.tmux.panes = [done]
+        self.tmux.versions[done.topic_key] = "v2"
+
+        self.instance._sync_topics()
+
+        notifications = [
+            params
+            for method, params in self.telegram.calls
+            if method == "sendMessage"
+            and params.get("message_thread_id") == thread_id
+            and not params.get("disable_notification")
+        ]
+        self.assertEqual(1, len(notifications))
+        self.assertIn("Exact final response.", notifications[0]["text"])
+
+    def test_topic_mapping_survives_a_changed_tmux_pane_id(self) -> None:
+        thread_id = self.configure()
+        self.telegram.calls.clear()
+        replacement = bridge.AgentPane(
+            "%99", "tr", "0", "codex", "1", "codex", "working"
+        )
+        self.tmux.panes = [replacement]
+
+        self.instance._sync_topics()
+
+        record = self.instance.state["topics"][replacement.topic_key]
+        self.assertEqual(thread_id, record["thread_id"])
+        self.assertEqual("%99", record["pane_id"])
+        self.assertNotIn(
+            "createForumTopic", [method for method, _ in self.telegram.calls]
+        )
+
+    def test_missing_agent_topic_is_closed_not_deleted(self) -> None:
+        thread_id = self.configure()
+        self.telegram.calls.clear()
+        self.tmux.panes = []
+
+        self.instance._sync_topics()
+
+        close_calls = [
+            params
+            for method, params in self.telegram.calls
+            if method == "closeForumTopic"
+        ]
+        self.assertEqual(
+            [{"chat_id": -100123, "message_thread_id": thread_id}], close_calls
+        )
+        record = self.instance.state["topics"][self.pane.topic_key]
+        self.assertTrue(record["closed"])
+
+    def test_unauthorized_group_message_is_ignored(self) -> None:
+        thread_id = self.configure()
+        message = {
+            **self.control_message,
+            "message_id": 3,
+            "message_thread_id": thread_id,
+            "from": {"id": 999},
+            "text": "Do something unsafe",
+        }
+
+        self.instance._handle_message(message)
+
+        self.assertEqual([], self.tmux.sent)
 
 
 if __name__ == "__main__":

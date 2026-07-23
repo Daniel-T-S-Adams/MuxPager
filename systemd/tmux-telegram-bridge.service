@@ -1,5 +1,5 @@
 [Unit]
-Description=Private Telegram inbox for tmux agents
+Description=Private Telegram topics for tmux agents
 After=network-online.target
 Wants=network-online.target
 
@@ -19,4 +19,3 @@ ProtectKernelTunables=true
 
 [Install]
 WantedBy=default.target
-
