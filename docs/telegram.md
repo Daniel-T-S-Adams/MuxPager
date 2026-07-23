@@ -16,9 +16,16 @@ private forum group; each live Codex or Claude pane has its own topic.
 
    ```bash
    systemctl --user enable --now tmux-telegram-bridge
+   systemctl --user is-active tmux-telegram-bridge
    ```
 
-4. Send `/id` to the bot in a direct chat. Add the returned ID to the same file:
+   The second command should print `active`. If the bot cannot be added to
+   groups later, open `/setjoingroups` in BotFather and allow group joins for
+   this bot.
+
+4. Send `/id` to the bot in a direct chat. Before an allowed user ID is saved,
+   pairing mode intentionally answers only this command. Add the returned ID to
+   the same file and save it:
 
    ```ini
    TMUX_TELEGRAM_ALLOWED_USER_ID=your-numeric-id
@@ -31,11 +38,27 @@ private forum group; each live Codex or Claude pane has its own topic.
    ```
 
 6. Create a private Telegram group containing exactly you and the bot. Enable
-   Topics and grant the bot administrator permission to **Manage Topics**.
-7. Send `/setup` in General.
+   Topics and grant the bot administrator permission to **Manage Topics**. If
+   Telegram requires another person when creating the group, remove them before
+   continuing.
+7. Send `/setup` in General. General becomes Control; send `/status` there and
+   confirm that your live agents are listed.
 
 The bridge rejects non-forum groups, public groups, groups with additional
 members, and bots without topic-management permission.
+
+Telegram's Bot Privacy Mode can remain enabled: an administrator receives the
+group messages the bridge needs. Unmute the group or individual agent topics if
+you want a phone notification when an agent finishes.
+
+If this machine should keep the bridge running after you log out (common on a
+remote server), enable user lingering once:
+
+```bash
+sudo loginctl enable-linger "$(id -un)"
+```
+
+This is unnecessary when your user session remains logged in.
 
 ## Daily use
 
@@ -73,6 +96,17 @@ Claude conversation; use the agent CLI's resume functionality when that is
 needed.
 
 ## End-to-end test
+
+First verify the local installation and bridge:
+
+```bash
+scripts/doctor.sh
+systemctl --user is-active tmux-telegram-bridge
+```
+
+The doctor should report all required checks as passed, and the service command
+should print `active`. In Control, `/status` should list the same live agents as
+the tmux sidebar.
 
 In a waiting agent topic, send:
 

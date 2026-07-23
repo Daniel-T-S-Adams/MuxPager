@@ -15,6 +15,9 @@ require_command() {
 require_command bash
 require_command python3
 require_command tmux
+require_command fzf
+require_command ps
+require_command pgrep
 require_command "$SYSTEMCTL_BIN"
 
 if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
@@ -41,7 +44,7 @@ else
 fi
 
 echo
-echo "tmux agent console installed from: $PROJECT_ROOT"
+echo "MuxPager installed from: $PROJECT_ROOT"
 echo "Core configuration: ~/.tmux.conf, ~/.codex/hooks.json, ~/.claude/settings.json"
 echo "Telegram configuration: $ENV_FILE"
 echo

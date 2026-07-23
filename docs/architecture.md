@@ -1,6 +1,6 @@
 # Architecture
 
-tmux Agent Console has one agent-state core and two first-class interfaces:
+MuxPager has one agent-state core and two first-class interfaces:
 the local tmux UI and the private Telegram topic group.
 
 ```text
@@ -32,7 +32,7 @@ history. Starting an agent in another position creates a distinct topic.
 
 ## Stable integration boundary
 
-`bin/tmux-agent-list` is the supported machine-readable boundary between the
+`bin/muxpager-agent-list` is the supported machine-readable boundary between the
 core and external interfaces. It emits seven tab-separated fields:
 
 ```text
@@ -56,7 +56,7 @@ The Telegram bridge also reads the exact cached final message from:
 | Agent statuses and final messages | `~/.cache/tmux-agent-status/` |
 | Telegram token and allowed user | `~/.config/tmux-telegram-bridge/env` |
 | Telegram group/topic mapping | `~/.local/state/tmux-telegram-bridge/state.json` |
-| Installer ownership metadata | `~/.config/tmux-agent-console/install.json` |
+| Installer ownership metadata | `~/.config/muxpager/install.json` |
 
 Credentials and learned chat IDs are never stored in the checkout.
 

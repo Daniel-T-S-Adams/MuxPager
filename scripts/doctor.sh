@@ -39,14 +39,14 @@ else
     warn "neither Codex nor Claude was found; tmux works but agent tracking cannot be exercised"
 fi
 
-if grep -Fq '# >>> tmux-agent-console managed configuration >>>' "$HOME/.tmux.conf" 2>/dev/null; then
+if grep -Fq '# >>> muxpager managed configuration >>>' "$HOME/.tmux.conf" 2>/dev/null; then
     pass "tmux loads the managed project configuration"
 else
     fail "~/.tmux.conf does not contain the managed project block"
 fi
 
 for hook_file in "$HOME/.codex/hooks.json" "$HOME/.claude/settings.json"; do
-    if grep -Fq '/.local/libexec/tmux-agent-console/hooks/' "$hook_file" 2>/dev/null; then
+    if grep -Fq '/.local/libexec/muxpager/hooks/' "$hook_file" 2>/dev/null; then
         pass "$hook_file contains managed agent hooks"
     else
         fail "$hook_file does not contain managed agent hooks"
@@ -62,7 +62,7 @@ fi
 
 if tmux list-sessions >/dev/null 2>&1; then
     configured_root="$(
-        tmux show-environment -g TMUX_AGENT_PROJECT_ROOT 2>/dev/null |
+        tmux show-environment -g MUXPAGER_ROOT 2>/dev/null |
             sed 's/^[^=]*=//'
     )"
     if [ "$configured_root" = "$PROJECT_ROOT" ]; then

@@ -13,13 +13,21 @@ trap cleanup EXIT
 TEST_HOME="$TEST_ROOT/home"
 mkdir -p "$TEST_HOME/.claude"
 
-python3 - "$TEST_HOME" <<'PY'
+python3 - "$TEST_HOME" "$PROJECT_ROOT" <<'PY'
 import json
+import os
 import sys
 from pathlib import Path
 
 home = Path(sys.argv[1])
-(home / ".tmux.conf").write_text("set -g status-position top\n", encoding="utf-8")
+root = Path(sys.argv[2])
+(home / ".tmux.conf").write_text(
+    "set -g status-position top\n\n"
+    "# >>> tmux-agent-console managed configuration >>>\n"
+    'source-file "/old/checkout/.tmux.conf"\n'
+    "# <<< tmux-agent-console managed configuration <<<\n",
+    encoding="utf-8",
+)
 (home / ".claude" / "settings.json").write_text(
     json.dumps(
         {
@@ -31,6 +39,13 @@ home = Path(sys.argv[1])
                             {
                                 "type": "command",
                                 "command": "printf unrelated-hook",
+                            },
+                            {
+                                "type": "command",
+                                "command": (
+                                    "bash \"$HOME/.local/libexec/"
+                                    "tmux-agent-console/hooks/better-hook.sh\" Stop"
+                                ),
                             }
                         ]
                     }
@@ -40,13 +55,43 @@ home = Path(sys.argv[1])
     ),
     encoding="utf-8",
 )
+legacy_state = home / ".config" / "tmux-agent-console" / "install.json"
+legacy_state.parent.mkdir(parents=True)
+legacy_state.write_text(
+    json.dumps(
+        {
+            "project_root": str(root),
+            "tmux": {
+                "entry_path": str(home / ".tmux.conf"),
+                "write_path": str(home / ".tmux.conf"),
+                "original_kind": "regular",
+            },
+            "codex": {
+                "entry_path": str(home / ".codex/hooks.json"),
+                "write_path": str(home / ".codex/hooks.json"),
+                "original_kind": "missing",
+            },
+            "claude": {
+                "entry_path": str(home / ".claude/settings.json"),
+                "write_path": str(home / ".claude/settings.json"),
+                "original_kind": "regular",
+            },
+        }
+    ),
+    encoding="utf-8",
+)
+legacy_hooks = home / ".local" / "libexec" / "tmux-agent-console" / "hooks"
+legacy_hooks.parent.mkdir(parents=True)
+os.symlink(root / "plugins" / "tmux-agent-status" / "hooks", legacy_hooks)
 PY
 
 HOME="$TEST_HOME" \
+XDG_CONFIG_HOME="$TEST_HOME/.config" \
 TMUX_AGENT_SYSTEMCTL_BIN=/bin/true \
 TMUX_AGENT_SKIP_LIVE_RELOAD=1 \
     "$PROJECT_ROOT/install.sh"
 HOME="$TEST_HOME" \
+XDG_CONFIG_HOME="$TEST_HOME/.config" \
 TMUX_AGENT_SYSTEMCTL_BIN=/bin/true \
 TMUX_AGENT_SKIP_LIVE_RELOAD=1 \
     "$PROJECT_ROOT/install.sh"
@@ -62,7 +107,8 @@ root = Path(sys.argv[2])
 
 tmux_config = (home / ".tmux.conf").read_text(encoding="utf-8")
 assert "set -g status-position top" in tmux_config
-assert tmux_config.count("# >>> tmux-agent-console managed configuration >>>") == 1
+assert tmux_config.count("# >>> muxpager managed configuration >>>") == 1
+assert "tmux-agent-console managed configuration" not in tmux_config
 assert f'source-file "{root}/.tmux.conf"' in tmux_config
 
 for path in (home / ".codex/hooks.json", home / ".claude/settings.json"):
@@ -76,7 +122,7 @@ for path in (home / ".codex/hooks.json", home / ".claude/settings.json"):
     managed = [
         command
         for command in commands
-        if "/.local/libexec/tmux-agent-console/hooks/" in command
+        if "/.local/libexec/muxpager/hooks/" in command
     ]
     assert len(managed) == 4
 
@@ -94,9 +140,13 @@ assert oct(env_file.stat().st_mode & 0o777) == "0o600"
 assert (home / ".local/bin/tmux-telegram-bridge").resolve() == (
     root / "telegram/bridge.py"
 )
+assert not (home / ".config/tmux-agent-console/install.json").exists()
+assert (home / ".config/muxpager/install.json").exists()
+assert not (home / ".local/libexec/tmux-agent-console/hooks").exists()
 PY
 
 HOME="$TEST_HOME" \
+XDG_CONFIG_HOME="$TEST_HOME/.config" \
 TMUX_AGENT_SYSTEMCTL_BIN=/bin/true \
     "$PROJECT_ROOT/uninstall.sh"
 
@@ -111,7 +161,7 @@ assert tmux_config.strip() == "set -g status-position top"
 
 claude = json.loads((home / ".claude/settings.json").read_text(encoding="utf-8"))
 assert claude["model"] == "existing-model"
-assert "tmux-agent-console" not in json.dumps(claude)
+assert "/.local/libexec/muxpager/hooks/" not in json.dumps(claude)
 assert "printf unrelated-hook" in json.dumps(claude)
 
 assert not (home / ".codex/hooks.json").exists()

@@ -1,4 +1,7 @@
-# tmux Agent Console
+# MuxPager
+
+[![CI](https://github.com/Daniel-T-S-Adams/MuxPager/actions/workflows/ci.yml/badge.svg)](https://github.com/Daniel-T-S-Adams/MuxPager/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A self-contained tmux workspace for running Codex and Claude across many
 sessions, seeing which agents need attention, and continuing those conversations
@@ -43,6 +46,27 @@ tmux                                        Telegram
 - Codex CLI, Claude Code, or both.
 - A Telegram account for the phone interface.
 
+Install the system dependencies first with the command for your distribution.
+On Ubuntu or Debian:
+
+```bash
+sudo apt update
+sudo apt install tmux fzf procps python3
+```
+
+On Fedora:
+
+```bash
+sudo dnf install tmux fzf procps-ng python3
+```
+
+On Arch Linux:
+
+```bash
+sudo pacman -S --needed tmux fzf procps-ng python
+```
+
+The installer checks every required command before changing your configuration.
 Run `scripts/doctor.sh` after installation for an exact machine-level report.
 
 ## Install
@@ -50,8 +74,8 @@ Run `scripts/doctor.sh` after installation for an exact machine-level report.
 Clone the repository anywhere and run the unified installer:
 
 ```bash
-git clone https://github.com/Daniel-T-S-Adams/my-tmux.git
-cd my-tmux
+git clone https://github.com/Daniel-T-S-Adams/MuxPager.git
+cd MuxPager
 ./install.sh
 ```
 
@@ -67,11 +91,24 @@ The installer:
 - Starts Telegram automatically when a token is already configured.
 
 It is idempotent: rerunning it updates paths and hooks without duplicating them.
-Restart tmux and any existing Codex or Claude processes after the first install.
+After the first install:
+
+1. Start a new tmux session, or reload the current server with
+   `tmux source-file ~/.tmux.conf`.
+2. Restart any Codex and Claude processes that were already open.
+3. In Codex, open `/hooks`, review the four MuxPager user hooks, and trust them.
+   Codex hooks are enabled by default; if you previously set
+   `[features] hooks = false`, remove that override.
+4. In Claude Code, open `/hooks` and confirm the MuxPager user hooks appear.
+5. Run the machine checks:
 
 ```bash
 scripts/doctor.sh
 ```
+
+See the official [Codex hooks documentation](https://learn.chatgpt.com/docs/hooks.md)
+and [Claude Code hooks documentation](https://code.claude.com/docs/en/hooks)
+for the agent-specific hook controls.
 
 ## Connect Telegram
 
@@ -88,14 +125,18 @@ you and remain outside Git:
    ```
 
 4. Direct-message the bot with `/id`, copy the returned numeric ID into
-   `TMUX_TELEGRAM_ALLOWED_USER_ID`, and restart the service.
-5. Create a private group containing exactly you and the bot.
+   `TMUX_TELEGRAM_ALLOWED_USER_ID`, save the file, and restart the service.
+5. Create a private group containing exactly you and the bot. If Telegram makes
+   you add another person to create it, remove that person before `/setup`.
 6. Enable Topics, then make the bot an administrator with **Manage Topics**.
-7. Send `/setup` in the group's General topic.
+7. Send `/setup` in the group's General topic, then send `/status` in Control.
 
 `General` becomes `Control`, and the bridge creates one topic for every live
 Codex or Claude pane. Text in an agent topic goes only to that pane; a 👍 confirms
-delivery. Completed replies arrive as new messages in the same topic.
+delivery. Completed replies arrive as new messages in the same topic. Privacy
+Mode can stay enabled because the bot is an administrator. If the bot cannot be
+added to the group, use BotFather's `/setjoingroups` to allow it. Unmute the
+group or its agent topics if you want phone notifications.
 
 See [docs/telegram.md](docs/telegram.md) for lifecycle behavior, testing, privacy
 checks, notifications, and troubleshooting.
@@ -134,7 +175,7 @@ Agent hooks record lifecycle state and exact final messages under
 live tmux pane process tree. The sidebar, switcher, status line, and Telegram
 bridge all consume that validated state.
 
-`bin/tmux-agent-list` is the stable integration boundary. It emits one
+`bin/muxpager-agent-list` is the stable integration boundary. It emits one
 tab-separated row per live agent pane; Telegram does not depend directly on
 collector internals.
 
@@ -197,3 +238,7 @@ The suite covers the Telegram bridge, relocated installations, safe
 install/uninstall behavior, and the vendored plugin's shell regressions.
 
 For common failures, see [docs/troubleshooting.md](docs/troubleshooting.md).
+
+The project is released under the [MIT License](LICENSE). The vendored
+agent-status core retains upstream attribution in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

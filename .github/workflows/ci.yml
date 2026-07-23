@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bash fzf jq procps tmux
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Check for committed secrets
+        run: python3 tests/test_no_secrets.py
+
+      - name: Run complete test suite
+        run: tests/run-all.sh
+
+      - name: Check patch whitespace
+        run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD

@@ -1,5 +1,5 @@
 [Unit]
-Description=tmux Agent Console Telegram topics
+Description=MuxPager Telegram topics
 After=network-online.target
 Wants=network-online.target
 

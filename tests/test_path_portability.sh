@@ -29,7 +29,7 @@ HOME="$TEST_HOME" tmux -L "$TEST_SOCKET" \
     -f "$RELOCATED_ROOT/.tmux.conf" new-session -d -s portability
 
 detected_root="$(
-    tmux -L "$TEST_SOCKET" show-environment -g TMUX_AGENT_PROJECT_ROOT |
+    tmux -L "$TEST_SOCKET" show-environment -g MUXPAGER_ROOT |
         sed 's/^[^=]*=//'
 )"
 if [ "$detected_root" != "$RELOCATED_ROOT" ]; then
@@ -52,7 +52,7 @@ for name in ("codex-hooks.json", "claude-hooks.json"):
         for hook in matcher["hooks"]
     ]
     assert commands
-    assert all("$HOME/.local/libexec/tmux-agent-console/hooks/" in command for command in commands)
+    assert all("$HOME/.local/libexec/muxpager/hooks/" in command for command in commands)
     assert all("/my-tmux/" not in command for command in commands)
 
 unit = (root / "telegram" / "tmux-telegram-bridge.service").read_text(
@@ -67,7 +67,7 @@ if [ "$(readlink -f "$TEST_HOME/.local/bin/tmux-telegram-bridge")" != \
     echo "Telegram bridge runtime link points at the wrong checkout" >&2
     exit 1
 fi
-if [ "$(readlink -f "$TEST_HOME/.local/libexec/tmux-agent-console/hooks")" != \
+if [ "$(readlink -f "$TEST_HOME/.local/libexec/muxpager/hooks")" != \
     "$RELOCATED_ROOT/plugins/tmux-agent-status/hooks" ]; then
     echo "agent hook runtime link points at the wrong checkout" >&2
     exit 1

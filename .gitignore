@@ -1,3 +1,13 @@
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.coverage
 
+# Defensive secret ignores. Runtime credentials already live outside the repo.
+.env
+.env.*
+*.token
+telegram/env
+
+# Local runtime state must never be committed.
+state.json

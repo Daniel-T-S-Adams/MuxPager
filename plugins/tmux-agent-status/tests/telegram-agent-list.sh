@@ -53,4 +53,3 @@ if [ "$actual" != "$expected" ]; then
 fi
 
 echo "Telegram agent pane listing checks passed"
-

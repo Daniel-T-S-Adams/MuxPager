@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Telegram forum topics for live Codex and Claude panes in tmux Agent Console."""
+"""Telegram forum topics for live Codex and Claude panes in MuxPager."""
 
 from __future__ import annotations
 
@@ -156,7 +156,7 @@ class TmuxClient:
     def __init__(self, repo_root: Path, tmux_bin: str = "tmux") -> None:
         self.repo_root = repo_root
         self.tmux_bin = tmux_bin
-        self.list_script = repo_root / "bin/tmux-agent-list"
+        self.list_script = repo_root / "bin/muxpager-agent-list"
         status_root = os.environ.get(
             "TMUX_AGENT_STATUS_DIR", str(Path.home() / ".cache/tmux-agent-status")
         )

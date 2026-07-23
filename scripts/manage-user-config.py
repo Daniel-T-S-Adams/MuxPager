@@ -12,10 +12,14 @@ import tempfile
 from typing import Any
 
 
-PROJECT_NAME = "tmux-agent-console"
-TMUX_BEGIN = "# >>> tmux-agent-console managed configuration >>>"
-TMUX_END = "# <<< tmux-agent-console managed configuration <<<"
+PROJECT_NAME = "muxpager"
+LEGACY_PROJECT_NAME = "tmux-agent-console"
+TMUX_BEGIN = "# >>> muxpager managed configuration >>>"
+TMUX_END = "# <<< muxpager managed configuration <<<"
+LEGACY_TMUX_BEGIN = "# >>> tmux-agent-console managed configuration >>>"
+LEGACY_TMUX_END = "# <<< tmux-agent-console managed configuration <<<"
 MANAGED_HOOK_MARKERS = (
+    "/.local/libexec/muxpager/hooks/",
     "/.local/libexec/tmux-agent-console/hooks/",
     "/plugins/tmux-agent-status/hooks/",
 )
@@ -33,6 +37,10 @@ def config_home() -> Path:
 
 def state_path() -> Path:
     return config_home() / PROJECT_NAME / "install.json"
+
+
+def legacy_state_path() -> Path:
+    return config_home() / LEGACY_PROJECT_NAME / "install.json"
 
 
 def atomic_write(path: Path, content: str, mode: int = 0o600) -> None:
@@ -75,12 +83,16 @@ def tmux_quote(value: str) -> str:
 
 
 def strip_tmux_block(content: str) -> str:
-    while TMUX_BEGIN in content:
-        before, remainder = content.split(TMUX_BEGIN, 1)
-        if TMUX_END not in remainder:
-            raise RuntimeError("The managed block in ~/.tmux.conf is incomplete")
-        _, after = remainder.split(TMUX_END, 1)
-        content = before.rstrip() + "\n" + after.lstrip("\n")
+    for begin, end in (
+        (TMUX_BEGIN, TMUX_END),
+        (LEGACY_TMUX_BEGIN, LEGACY_TMUX_END),
+    ):
+        while begin in content:
+            before, remainder = content.split(begin, 1)
+            if end not in remainder:
+                raise RuntimeError("The managed block in ~/.tmux.conf is incomplete")
+            _, after = remainder.split(end, 1)
+            content = before.rstrip() + "\n" + after.lstrip("\n")
     return content.rstrip()
 
 
@@ -191,6 +203,8 @@ def install_hook_config(
 def install(project_root: Path) -> None:
     project_root = project_root.resolve()
     previous = json_load(state_path())
+    if not previous:
+        previous = json_load(legacy_state_path())
     metadata = {
         "project_root": str(project_root),
         "tmux": install_tmux(project_root),
@@ -216,6 +230,7 @@ def install(project_root: Path) -> None:
             ):
                 new_section["original_kind"] = old_section["original_kind"]
     json_write(state_path(), metadata)
+    legacy_state_path().unlink(missing_ok=True)
 
 
 def remove_tmux(metadata: dict[str, Any]) -> None:
@@ -246,13 +261,17 @@ def remove_hook_config(metadata: dict[str, Any]) -> None:
 
 
 def uninstall() -> None:
-    metadata = json_load(state_path())
+    install_record = state_path()
+    metadata = json_load(install_record)
+    if not metadata:
+        install_record = legacy_state_path()
+        metadata = json_load(install_record)
     if not metadata:
         raise RuntimeError("No managed installation record was found")
     remove_tmux(dict(metadata.get("tmux") or {}))
     remove_hook_config(dict(metadata.get("codex") or {}))
     remove_hook_config(dict(metadata.get("claude") or {}))
-    state_path().unlink(missing_ok=True)
+    install_record.unlink(missing_ok=True)
 
 
 def main() -> int:

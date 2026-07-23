@@ -38,4 +38,3 @@ while IFS=$'\t' read -r pane_id session window_index window_name pane_index pane
         "$pane_id" "$session" "$window_index" "$window_name" \
         "$pane_index" "$agent" "$status"
 done <<< "$rows"
-

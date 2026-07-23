@@ -12,7 +12,7 @@ credentials, service health, and group pairing without printing secrets.
 ## An agent is missing
 
 ```bash
-bin/tmux-agent-list
+bin/muxpager-agent-list
 ```
 
 If the pane is absent, verify that Codex or Claude is actually running—not just
@@ -21,7 +21,7 @@ so it inherits the managed hooks.
 
 ## A Bash pane appears as an agent
 
-Run `bin/tmux-agent-list`. Persisted hook state is ignored unless the pane's
+Run `bin/muxpager-agent-list`. Persisted hook state is ignored unless the pane's
 process tree contains a live agent. If the pane still appears, capture:
 
 ```bash
@@ -66,4 +66,4 @@ Then watch the pane and service log during another short round-trip test.
 
 The stable identity includes session name, window index, pane index, and agent
 type. Reopening Claude or Codex in another pane correctly creates a different
-topic. Run `/status` in Control and compare with `bin/tmux-agent-list`.
+topic. Run `/status` in Control and compare with `bin/muxpager-agent-list`.

@@ -4,7 +4,8 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_DIR="$HOME/.local/bin"
-LIBEXEC_DIR="$HOME/.local/libexec/tmux-agent-console"
+LIBEXEC_DIR="$HOME/.local/libexec/muxpager"
+LEGACY_HOOKS_LINK="$HOME/.local/libexec/tmux-agent-console/hooks"
 BRIDGE_LINK="$BIN_DIR/tmux-telegram-bridge"
 HOOKS_LINK="$LIBEXEC_DIR/hooks"
 
@@ -23,3 +24,9 @@ install -d -m 755 "$BIN_DIR"
 install -d -m 755 "$LIBEXEC_DIR"
 safe_link "$PROJECT_ROOT/telegram/bridge.py" "$BRIDGE_LINK"
 safe_link "$PROJECT_ROOT/plugins/tmux-agent-status/hooks" "$HOOKS_LINK"
+
+if [ -L "$LEGACY_HOOKS_LINK" ] && \
+    [ "$(readlink -f "$LEGACY_HOOKS_LINK")" = \
+      "$PROJECT_ROOT/plugins/tmux-agent-status/hooks" ]; then
+    rm -f "$LEGACY_HOOKS_LINK"
+fi

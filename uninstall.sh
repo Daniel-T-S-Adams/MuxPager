@@ -29,6 +29,9 @@ safe_remove_link \
     "$HOME/.local/bin/tmux-telegram-bridge" \
     "$PROJECT_ROOT/telegram/bridge.py"
 safe_remove_link \
+    "$HOME/.local/libexec/muxpager/hooks" \
+    "$PROJECT_ROOT/plugins/tmux-agent-status/hooks"
+safe_remove_link \
     "$HOME/.local/libexec/tmux-agent-console/hooks" \
     "$PROJECT_ROOT/plugins/tmux-agent-status/hooks"
 "$SYSTEMCTL_BIN" --user daemon-reload
