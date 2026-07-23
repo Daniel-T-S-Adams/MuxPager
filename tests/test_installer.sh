@@ -92,7 +92,7 @@ env_file = home / ".config/tmux-telegram-bridge/env"
 assert env_file.exists()
 assert oct(env_file.stat().st_mode & 0o777) == "0o600"
 assert (home / ".local/bin/tmux-telegram-bridge").resolve() == (
-    root / "scripts/tmux-telegram-bridge.py"
+    root / "telegram/bridge.py"
 )
 PY
 

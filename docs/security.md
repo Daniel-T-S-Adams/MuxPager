@@ -1,0 +1,58 @@
+# Security model
+
+The Telegram bridge is a remote input path into interactive agent panes. Its
+controls are designed to prevent that input from becoming a general remote
+shell.
+
+## Trust boundary
+
+The bridge trusts:
+
+- The local Unix user running tmux and the systemd user service.
+- One exact Telegram numeric user ID.
+- One private forum supergroup registered through `/setup`.
+
+It does not trust group names, topic names, tmux window names, cached statuses,
+or Telegram usernames as identity.
+
+## Controls
+
+- Pairing mode reveals only the sender's own numeric Telegram ID and never tmux
+  contents.
+- Every group message must come from the configured user ID and configured
+  group.
+- `/setup` requires a private group with no public username and exactly two
+  members: the user and bot.
+- Topics are created and mapped by the bridge; arbitrary topics cannot select a
+  pane by name.
+- Before every paste, the bridge resolves the stable mapping against the
+  current live-agent list and verifies that the destination pane is not dead.
+- Message text is written to a mode-`0600` temporary file, loaded into a private
+  tmux buffer, pasted literally, and followed by Enter. The message is never
+  evaluated by a shell belonging to the bridge.
+- If the agent exits to Bash, the live-agent lookup fails and delivery is
+  refused.
+
+An agent may itself choose to execute a command after reading a Telegram
+message. Telegram therefore has the same authority as typing a prompt directly
+into that agent; it does not bypass the agent's own approval or sandbox policy.
+
+## Secret storage
+
+The token and allowed user ID live in:
+
+```text
+~/.config/tmux-telegram-bridge/env
+```
+
+The installer creates it with mode `0600`. Group and topic IDs live in a
+separate mode-`0600` state file under `~/.local/state`.
+
+Never commit either file or paste a token into an issue, shell command argument,
+or chat. If a token is exposed:
+
+1. Revoke it immediately with `@BotFather`.
+2. Generate a replacement.
+3. Update the private environment file.
+4. Restart `tmux-telegram-bridge`.
+5. Remove the secret from Git history before making the repository public.

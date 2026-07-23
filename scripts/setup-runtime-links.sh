@@ -21,5 +21,5 @@ safe_link() {
 
 install -d -m 755 "$BIN_DIR"
 install -d -m 755 "$LIBEXEC_DIR"
-safe_link "$PROJECT_ROOT/scripts/tmux-telegram-bridge.py" "$BRIDGE_LINK"
+safe_link "$PROJECT_ROOT/telegram/bridge.py" "$BRIDGE_LINK"
 safe_link "$PROJECT_ROOT/plugins/tmux-agent-status/hooks" "$HOOKS_LINK"

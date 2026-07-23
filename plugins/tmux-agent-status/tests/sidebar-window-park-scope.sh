@@ -166,6 +166,10 @@ if [ "$(cat "$STATUS_DIR/repo.status")" = "parked" ]; then
     exit 1
 fi
 
+# This test exercises window parking, not Claude interrupt reconciliation.
+# Keep the simulated working marker fresh so a slow/loaded test host cannot
+# age it past the collector's five-second interrupted-turn threshold.
+touch "$PANE_DIR/repo_%3.status"
 PATH="$FAKE_BIN:$PATH" \
 HOME="$TEST_HOME" \
 "$REPO_DIR/scripts/sidebar-collector.sh" --once >/dev/null
@@ -179,6 +183,7 @@ assert_matches $'^R:P\\|repo\\|%3\\|review-b\\|working\\|[01]\trepo:w2\tP$' "$CA
 : > "$PARKED_DIR/repo.parked"
 echo "parked" > "$STATUS_DIR/repo.status"
 
+touch "$PANE_DIR/repo_%3.status"
 PATH="$FAKE_BIN:$PATH" \
 HOME="$TEST_HOME" \
 "$REPO_DIR/scripts/sidebar-collector.sh" --once >/dev/null

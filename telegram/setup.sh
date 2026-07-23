@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SYSTEMCTL_BIN="${TMUX_AGENT_SYSTEMCTL_BIN:-systemctl}"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-telegram-bridge"
 SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
@@ -12,10 +12,10 @@ SERVICE_LINK="$SYSTEMD_DIR/tmux-telegram-bridge.service"
 install -d -m 700 "$CONFIG_DIR"
 install -d -m 700 "$SYSTEMD_DIR"
 if [ ! -f "$ENV_FILE" ]; then
-    install -m 600 "$REPO_DIR/config/tmux-telegram-bridge.env.example" "$ENV_FILE"
+    install -m 600 "$PROJECT_ROOT/telegram/env.example" "$ENV_FILE"
 fi
-"$REPO_DIR/scripts/setup-runtime-links.sh"
-ln -sfn "$REPO_DIR/systemd/tmux-telegram-bridge.service" "$SERVICE_LINK"
+"$PROJECT_ROOT/scripts/setup-runtime-links.sh"
+ln -sfn "$PROJECT_ROOT/telegram/tmux-telegram-bridge.service" "$SERVICE_LINK"
 
 "$SYSTEMCTL_BIN" --user daemon-reload
 

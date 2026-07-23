@@ -26,7 +26,7 @@ python3 "$PROJECT_ROOT/scripts/manage-user-config.py" \
     install --project-root "$PROJECT_ROOT"
 "$PROJECT_ROOT/scripts/setup-runtime-links.sh"
 TMUX_AGENT_SYSTEMCTL_BIN="$SYSTEMCTL_BIN" \
-    "$PROJECT_ROOT/scripts/setup-telegram-bridge.sh"
+    "$PROJECT_ROOT/telegram/setup.sh"
 
 if [ "${TMUX_AGENT_SKIP_LIVE_RELOAD:-0}" != "1" ] && tmux list-sessions >/dev/null 2>&1; then
     tmux source-file "$PROJECT_ROOT/.tmux.conf"

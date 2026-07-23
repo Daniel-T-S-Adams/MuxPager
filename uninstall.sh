@@ -24,10 +24,10 @@ python3 "$PROJECT_ROOT/scripts/manage-user-config.py" uninstall
 
 safe_remove_link \
     "$CONFIG_HOME/systemd/user/tmux-telegram-bridge.service" \
-    "$PROJECT_ROOT/systemd/tmux-telegram-bridge.service"
+    "$PROJECT_ROOT/telegram/tmux-telegram-bridge.service"
 safe_remove_link \
     "$HOME/.local/bin/tmux-telegram-bridge" \
-    "$PROJECT_ROOT/scripts/tmux-telegram-bridge.py"
+    "$PROJECT_ROOT/telegram/bridge.py"
 safe_remove_link \
     "$HOME/.local/libexec/tmux-agent-console/hooks" \
     "$PROJECT_ROOT/plugins/tmux-agent-status/hooks"

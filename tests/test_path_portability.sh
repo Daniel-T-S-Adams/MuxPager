@@ -17,8 +17,10 @@ TEST_HOME="$TEST_ROOT/home"
 mkdir -p "$RELOCATED_ROOT" "$TEST_HOME"
 cp -a \
     "$PROJECT_ROOT/.tmux.conf" \
+    "$PROJECT_ROOT/bin" \
     "$PROJECT_ROOT/plugins" \
     "$PROJECT_ROOT/scripts" \
+    "$PROJECT_ROOT/telegram" \
     "$RELOCATED_ROOT/"
 
 HOME="$TEST_HOME" "$RELOCATED_ROOT/scripts/setup-runtime-links.sh"
@@ -53,7 +55,7 @@ for name in ("codex-hooks.json", "claude-hooks.json"):
     assert all("$HOME/.local/libexec/tmux-agent-console/hooks/" in command for command in commands)
     assert all("/my-tmux/" not in command for command in commands)
 
-unit = (root / "systemd" / "tmux-telegram-bridge.service").read_text(
+unit = (root / "telegram" / "tmux-telegram-bridge.service").read_text(
     encoding="utf-8"
 )
 assert "%h/my-tmux" not in unit
@@ -61,7 +63,7 @@ assert "ExecStart=%h/.local/bin/tmux-telegram-bridge" in unit
 PY
 
 if [ "$(readlink -f "$TEST_HOME/.local/bin/tmux-telegram-bridge")" != \
-    "$RELOCATED_ROOT/scripts/tmux-telegram-bridge.py" ]; then
+    "$RELOCATED_ROOT/telegram/bridge.py" ]; then
     echo "Telegram bridge runtime link points at the wrong checkout" >&2
     exit 1
 fi

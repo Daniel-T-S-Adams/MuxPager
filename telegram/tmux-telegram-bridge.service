@@ -1,5 +1,5 @@
 [Unit]
-Description=Private Telegram topics for tmux agents
+Description=tmux Agent Console Telegram topics
 After=network-online.target
 Wants=network-online.target
 

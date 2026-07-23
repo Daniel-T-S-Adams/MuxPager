@@ -10,7 +10,7 @@ from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = REPO_ROOT / "scripts/tmux-telegram-bridge.py"
+MODULE_PATH = REPO_ROOT / "telegram/bridge.py"
 SPEC = importlib.util.spec_from_file_location("tmux_telegram_bridge", MODULE_PATH)
 assert SPEC and SPEC.loader
 bridge = importlib.util.module_from_spec(SPEC)

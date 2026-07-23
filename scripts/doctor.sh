@@ -54,7 +54,7 @@ for hook_file in "$HOME/.codex/hooks.json" "$HOME/.claude/settings.json"; do
 done
 
 if [ "$(readlink -f "$HOME/.local/bin/tmux-telegram-bridge" 2>/dev/null)" = \
-    "$PROJECT_ROOT/scripts/tmux-telegram-bridge.py" ]; then
+    "$PROJECT_ROOT/telegram/bridge.py" ]; then
     pass "Telegram bridge launcher points at this checkout"
 else
     fail "Telegram bridge launcher is missing or points elsewhere"
@@ -70,7 +70,7 @@ if tmux list-sessions >/dev/null 2>&1; then
     else
         fail "the running tmux server uses '${configured_root:-no project root}'"
     fi
-    if python3 "$PROJECT_ROOT/scripts/tmux-telegram-bridge.py" --check >/dev/null 2>&1; then
+    if python3 "$PROJECT_ROOT/telegram/bridge.py" --check >/dev/null 2>&1; then
         pass "agent pane discovery is operational"
     else
         fail "agent pane discovery failed"
