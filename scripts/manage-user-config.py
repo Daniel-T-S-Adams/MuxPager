@@ -23,6 +23,7 @@ MANAGED_HOOK_MARKERS = (
     "/.local/libexec/tmux-agent-console/hooks/",
     "/plugins/tmux-agent-status/hooks/",
 )
+MANAGED_CLAUDE_PERMISSIONS = ("mcp__muxpager__ask_choice",)
 
 
 def home_dir() -> Path:
@@ -138,30 +139,43 @@ def hook_is_managed(hook: Any) -> bool:
 
 def remove_managed_hooks(payload: dict[str, Any]) -> dict[str, Any]:
     hooks = payload.get("hooks")
-    if not isinstance(hooks, dict):
-        return payload
     cleaned_events: dict[str, Any] = {}
-    for event, entries in hooks.items():
-        if not isinstance(entries, list):
-            cleaned_events[event] = entries
-            continue
-        cleaned_entries: list[Any] = []
-        for entry in entries:
-            if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
-                cleaned_entries.append(entry)
+    if isinstance(hooks, dict):
+        for event, entries in hooks.items():
+            if not isinstance(entries, list):
+                cleaned_events[event] = entries
                 continue
-            cleaned_entry = dict(entry)
-            cleaned_entry["hooks"] = [
-                hook for hook in entry["hooks"] if not hook_is_managed(hook)
+            cleaned_entries: list[Any] = []
+            for entry in entries:
+                if not isinstance(entry, dict) or not isinstance(
+                    entry.get("hooks"), list
+                ):
+                    cleaned_entries.append(entry)
+                    continue
+                cleaned_entry = dict(entry)
+                cleaned_entry["hooks"] = [
+                    hook for hook in entry["hooks"] if not hook_is_managed(hook)
+                ]
+                if cleaned_entry["hooks"]:
+                    cleaned_entries.append(cleaned_entry)
+            if cleaned_entries:
+                cleaned_events[event] = cleaned_entries
+        if cleaned_events:
+            payload["hooks"] = cleaned_events
+        else:
+            payload.pop("hooks", None)
+
+    permissions = payload.get("permissions")
+    if isinstance(permissions, dict):
+        allow = permissions.get("allow")
+        if isinstance(allow, list):
+            permissions["allow"] = [
+                rule for rule in allow if rule not in MANAGED_CLAUDE_PERMISSIONS
             ]
-            if cleaned_entry["hooks"]:
-                cleaned_entries.append(cleaned_entry)
-        if cleaned_entries:
-            cleaned_events[event] = cleaned_entries
-    if cleaned_events:
-        payload["hooks"] = cleaned_events
-    else:
-        payload.pop("hooks", None)
+            if not permissions["allow"]:
+                permissions.pop("allow", None)
+        if not permissions:
+            payload.pop("permissions", None)
     return payload
 
 
@@ -182,6 +196,21 @@ def merge_hook_template(
         if not isinstance(current, list):
             raise RuntimeError(f"The existing hook event {event} must be a list")
         current.extend(entries)
+
+    source_permissions = template.get("permissions")
+    if isinstance(source_permissions, dict):
+        source_allow = source_permissions.get("allow")
+        if not isinstance(source_allow, list):
+            raise RuntimeError("The project permission allowlist must be a list")
+        target_permissions = existing.setdefault("permissions", {})
+        if not isinstance(target_permissions, dict):
+            raise RuntimeError("The existing 'permissions' value must be a JSON object")
+        target_allow = target_permissions.setdefault("allow", [])
+        if not isinstance(target_allow, list):
+            raise RuntimeError("The existing permission allowlist must be a list")
+        for rule in source_allow:
+            if rule not in target_allow:
+                target_allow.append(rule)
     return existing
 
 

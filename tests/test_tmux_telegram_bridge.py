@@ -171,6 +171,33 @@ class ForumTopicBridgeTests(unittest.TestCase):
         record = self.instance.state["topics"][self.pane.topic_key]
         return record["thread_id"]
 
+    def create_choice(self):
+        return self.instance.choice_store.create(
+            pane_id=self.pane.pane_id,
+            session=self.pane.session,
+            window_index=self.pane.window_index,
+            pane_index=self.pane.pane_index,
+            agent=self.pane.agent,
+            question="Which environment should I use?",
+            options=[
+                {"label": "Staging", "description": "Run safely first"},
+                {"label": "Production", "description": "Use live data"},
+            ],
+        )
+
+    @staticmethod
+    def callback(choice, thread_id, option_id="0", user_id=42):
+        return {
+            "id": "callback-1",
+            "from": {"id": user_id},
+            "data": f"mq:{choice['id']}:{option_id}",
+            "message": {
+                "message_id": choice["telegram_message_id"],
+                "message_thread_id": thread_id,
+                "chat": {"id": -100123, "type": "supergroup"},
+            },
+        }
+
     def test_setup_creates_one_topic_for_each_live_agent(self) -> None:
         thread_id = self.configure()
 
@@ -286,6 +313,153 @@ class ForumTopicBridgeTests(unittest.TestCase):
         self.instance._handle_message(message)
 
         self.assertEqual([], self.tmux.sent)
+
+    def test_choice_is_published_as_inline_buttons_in_the_agent_topic(self) -> None:
+        thread_id = self.configure()
+        self.telegram.calls.clear()
+        choice = self.create_choice()
+
+        self.instance._sync_topics()
+
+        published = self.instance.choice_store.get(choice["id"])
+        self.assertEqual("published", published["state"])
+        messages = [
+            params
+            for method, params in self.telegram.calls
+            if method == "sendMessage" and "reply_markup" in params
+        ]
+        self.assertEqual(1, len(messages))
+        self.assertEqual(thread_id, messages[0]["message_thread_id"])
+        buttons = messages[0]["reply_markup"]["inline_keyboard"]
+        self.assertEqual(["Staging", "Production", "Cancel"], [row[0]["text"] for row in buttons])
+
+    def test_button_selection_is_delivered_as_the_next_user_message(self) -> None:
+        thread_id = self.configure()
+        choice = self.create_choice()
+        self.instance._sync_topics()
+        published = self.instance.choice_store.get(choice["id"])
+        self.tmux.panes = [
+            bridge.AgentPane(
+                "%2", "tr", "0", "codex", "1", "codex", "done"
+            )
+        ]
+        self.telegram.calls.clear()
+
+        self.instance._handle_callback_query(self.callback(published, thread_id))
+
+        self.assertEqual(1, len(self.tmux.sent))
+        pane_id, prompt = self.tmux.sent[0]
+        self.assertEqual("%2", pane_id)
+        self.assertIn("Selected answer: Staging", prompt)
+        self.assertEqual(
+            "delivered", self.instance.choice_store.get(choice["id"])["state"]
+        )
+        methods = [method for method, _ in self.telegram.calls]
+        self.assertIn("answerCallbackQuery", methods)
+        self.assertIn("editMessageText", methods)
+
+    def test_button_selection_waits_while_agent_is_still_working(self) -> None:
+        thread_id = self.configure()
+        choice = self.create_choice()
+        self.instance._sync_topics()
+        published = self.instance.choice_store.get(choice["id"])
+
+        self.instance._handle_callback_query(self.callback(published, thread_id, "1"))
+
+        self.assertEqual([], self.tmux.sent)
+        self.assertEqual(
+            "selected", self.instance.choice_store.get(choice["id"])["state"]
+        )
+
+        self.tmux.panes = [
+            bridge.AgentPane(
+                "%2", "tr", "0", "codex", "1", "codex", "done"
+            )
+        ]
+        self.instance._sync_topics()
+
+        self.assertEqual(1, len(self.tmux.sent))
+        self.assertIn("Selected answer: Production", self.tmux.sent[0][1])
+        self.assertEqual(
+            "delivered", self.instance.choice_store.get(choice["id"])["state"]
+        )
+
+    def test_unauthorized_button_press_cannot_select_or_deliver(self) -> None:
+        thread_id = self.configure()
+        choice = self.create_choice()
+        self.instance._sync_topics()
+        published = self.instance.choice_store.get(choice["id"])
+        self.tmux.panes = [
+            bridge.AgentPane(
+                "%2", "tr", "0", "codex", "1", "codex", "done"
+            )
+        ]
+
+        self.instance._handle_callback_query(
+            self.callback(published, thread_id, user_id=999)
+        )
+
+        self.assertEqual([], self.tmux.sent)
+        self.assertEqual(
+            "published", self.instance.choice_store.get(choice["id"])["state"]
+        )
+
+    def test_ordinary_text_is_rejected_while_buttons_are_active(self) -> None:
+        thread_id = self.configure()
+        choice = self.create_choice()
+        self.instance._sync_topics()
+        self.telegram.calls.clear()
+        message = {
+            **self.control_message,
+            "message_id": 8,
+            "message_thread_id": thread_id,
+            "text": "Ignore the options and continue",
+        }
+
+        self.instance._handle_message(message)
+
+        self.assertEqual([], self.tmux.sent)
+        warning = next(
+            params["text"]
+            for method, params in self.telegram.calls
+            if method == "sendMessage"
+        )
+        self.assertIn("waiting for a button choice", warning)
+        self.assertEqual(
+            "published", self.instance.choice_store.get(choice["id"])["state"]
+        )
+
+    def test_active_choice_suppresses_the_normal_completion_notification(self) -> None:
+        self.configure()
+        self.create_choice()
+        self.telegram.calls.clear()
+        done = bridge.AgentPane(
+            "%2", "tr", "0", "codex", "1", "codex", "done"
+        )
+        self.tmux.panes = [done]
+        self.tmux.versions[done.topic_key] = "v2"
+
+        self.instance._sync_topics()
+
+        messages = [
+            params
+            for method, params in self.telegram.calls
+            if method == "sendMessage" and not params.get("disable_notification")
+        ]
+        self.assertEqual(1, len(messages))
+        self.assertIn("Which environment", messages[0]["text"])
+
+    def test_choice_expires_if_the_exact_agent_pane_exits(self) -> None:
+        self.configure()
+        choice = self.create_choice()
+        self.instance._sync_topics()
+        self.tmux.panes = []
+
+        self.instance._sync_topics()
+
+        self.assertEqual(
+            "expired", self.instance.choice_store.get(choice["id"])["state"]
+        )
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ while IFS=$'\t' read -r pane_id session window_index window_name pane_index pane
     status=$(get_pane_status "$session" "$pane_id" 2>/dev/null || true)
 
     case "$status" in
-        working|done|ask|wait|parked) ;;
+        working|done|ask|parked) ;;
         *) status="done" ;;
     esac
 

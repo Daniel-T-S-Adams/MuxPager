@@ -4,11 +4,10 @@
 # Updates tmux session and pane status files based on Claude's working state
 
 STATUS_DIR="$HOME/.cache/tmux-agent-status"
-WAIT_DIR="$STATUS_DIR/wait"
 PARKED_DIR="$STATUS_DIR/parked"
 PANE_DIR="$STATUS_DIR/panes"
 REFRESH_FILE="$STATUS_DIR/.sidebar-refresh"
-mkdir -p "$STATUS_DIR" "$WAIT_DIR" "$PARKED_DIR" "$PANE_DIR"
+mkdir -p "$STATUS_DIR" "$PARKED_DIR" "$PANE_DIR"
 [ -f "$REFRESH_FILE" ] || : > "$REFRESH_FILE"
 
 # Read JSON from stdin (required by Claude Code hooks). The Stop payload
@@ -64,7 +63,7 @@ set_status() {
         echo "claude" > "$agent_file"
 
         # Roll the session status up from its panes by priority:
-        #   working > wait > ask > done   (matches status_priority()).
+        #   working > ask > done   (matches status_priority()).
         session_status="done"
         local best_pri=2
         local existing_pane_file=""
@@ -78,9 +77,6 @@ set_status() {
                     session_status="working"
                     best_pri=5
                     break
-                    ;;
-                wait)
-                    if [ "$best_pri" -lt 4 ]; then session_status="wait"; best_pri=4; fi
                     ;;
                 ask)
                     if [ "$best_pri" -lt 3 ]; then session_status="ask"; best_pri=3; fi
@@ -97,14 +93,7 @@ set_status() {
 
 clear_interaction_overrides() {
     local tmux_session="$1"
-    local session_wait_file="$WAIT_DIR/${tmux_session}.wait"
     local session_parked_file="$PARKED_DIR/${tmux_session}.parked"
-
-    if [ -f "$session_wait_file" ]; then
-        rm -f "$session_wait_file" "$WAIT_DIR/${tmux_session}_"*.wait 2>/dev/null
-    elif [ -n "${TMUX_PANE:-}" ]; then
-        rm -f "$WAIT_DIR/${tmux_session}_${TMUX_PANE}.wait"
-    fi
 
     if [ -f "$session_parked_file" ]; then
         rm -f "$session_parked_file" "$PARKED_DIR/${tmux_session}_"*.parked 2>/dev/null
@@ -150,13 +139,14 @@ has_running_background_task() {
 
 TMUX_SESSION=$(get_tmux_session) || exit 0
 HOOK_TYPE="${1:-}"
-WAIT_FILE="$WAIT_DIR/${TMUX_SESSION}.wait"
 PARKED_FILE="$PARKED_DIR/${TMUX_SESSION}.parked"
 
 case "$HOOK_TYPE" in
     UserPromptSubmit)
-        # User submitted a prompt — this is an explicit interaction, so
-        # cancel wait mode and unpark.
+        # User submitted a prompt — this is an explicit interaction, so unpark.
+        python3 \
+            "$HOME/.local/libexec/muxpager/questions/mark_local_answer.py" \
+            claude >/dev/null 2>&1 || true
         clear_interaction_overrides "$TMUX_SESSION"
         set_status "$TMUX_SESSION" "working"
         mark_refresh
@@ -165,7 +155,6 @@ case "$HOOK_TYPE" in
         # Agent is calling a tool — mark working but do NOT unpark.
         # Parking is an explicit user decision; only user interaction
         # (UserPromptSubmit) should unpark.
-        rm -f "$WAIT_FILE"
         if [ ! -f "$PARKED_FILE" ]; then
             set_status "$TMUX_SESSION" "working"
         fi

@@ -21,7 +21,6 @@ cleanup_pane_state() {
 
     rm -f "$PANE_DIR/${session}_${pane_id}.status"
     rm -f "$PANE_DIR/${session}_${pane_id}.agent"
-    rm -f "$WAIT_DIR/${session}_${pane_id}.wait"
     rm -f "$PARKED_DIR/${session}_${pane_id}.parked"
 }
 
@@ -32,7 +31,6 @@ cleanup_session_state() {
     rm -f "$STATUS_DIR/${session}-remote.status"
     rm -f "$STATUS_DIR/${session}.unread"
     rm -f "$STATUS_DIR/${session}-remote.unread"
-    rm -f "$WAIT_DIR/${session}.wait" "$WAIT_DIR/${session}_"*.wait
     rm -f "$PARKED_DIR/${session}.parked" "$PARKED_DIR/${session}_"*.parked
     rm -f "$PANE_DIR/${session}_"*.status "$PANE_DIR/${session}_"*.agent
 }
@@ -55,18 +53,6 @@ refresh_session_tracking() {
         echo "parked" > "$status_file"
         [ -f "$remote_status_file" ] && echo "parked" > "$remote_status_file"
         return 0
-    fi
-
-    if [ -f "$WAIT_DIR/${session}.wait" ]; then
-        local now expiry
-        printf -v now '%(%s)T' -1
-        expiry=$(cat "$WAIT_DIR/${session}.wait" 2>/dev/null || echo "")
-        if [ -n "$expiry" ] && [ "$expiry" -gt "$now" ] 2>/dev/null; then
-            echo "wait" > "$status_file"
-            [ -f "$remote_status_file" ] && echo "wait" > "$remote_status_file"
-            return 0
-        fi
-        rm -f "$WAIT_DIR/${session}.wait"
     fi
 
     for pane_file in "$PANE_DIR/${session}_"*.status; do

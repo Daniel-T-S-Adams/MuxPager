@@ -5,19 +5,27 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Default key bindings
 default_switcher_key="S"
 default_next_done_key="N"
-default_wait_key="W"
 default_park_key="p"
 
 # Get user configuration or use defaults.
 switcher_key=$(tmux show-option -gqv "@agent-status-key")
 next_done_key=$(tmux show-option -gqv "@agent-next-done-key")
-wait_key=$(tmux show-option -gqv "@agent-wait-key")
 park_key=$(tmux show-option -gqv "@agent-park-key")
 
 [ -z "$switcher_key" ] && switcher_key="$default_switcher_key"
 [ -z "$next_done_key" ] && next_done_key="$default_next_done_key"
-[ -z "$wait_key" ] && wait_key="$default_wait_key"
 [ -z "$park_key" ] && park_key="$default_park_key"
+
+# Remove the old timed-snooze binding on upgrade, but preserve any W binding
+# the user has replaced with a different command.
+legacy_wait_key=$(tmux show-option -gqv "@agent-wait-key")
+[ -z "$legacy_wait_key" ] && legacy_wait_key="W"
+legacy_wait_binding=$(tmux list-keys -T prefix "$legacy_wait_key" 2>/dev/null || true)
+case "$legacy_wait_binding" in
+    *"/tmux-agent-status/scripts/wait-session.sh"*)
+        tmux unbind-key -T prefix "$legacy_wait_key"
+        ;;
+esac
 
 # Default switcher view: "tree" (hierarchical session/window/pane, default)
 # or "agents" (flat list of every agent pane). Toggle mid-session with ctrl-f.
@@ -77,9 +85,6 @@ esac
 
 # Set up keybinding to switch to next done project
 tmux bind-key "$next_done_key" run-shell "$CURRENT_DIR/scripts/next-done-project.sh"
-
-# Set up keybinding to put session in wait mode
-tmux bind-key "$wait_key" run-shell "$CURRENT_DIR/scripts/wait-session.sh"
 
 # Set up keybinding to park a session for later
 tmux bind-key "$park_key" run-shell "$CURRENT_DIR/scripts/park-session.sh"

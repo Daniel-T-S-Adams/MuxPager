@@ -4,14 +4,13 @@
 # Sourced by sidebar-collector.sh (daemon) and optionally sidebar.sh (fallback).
 #
 # Requires the caller to:
-#   - source lib/session-status.sh (for STATUS_DIR, PARKED_DIR, WAIT_DIR)
+#   - source lib/session-status.sh (for status-directory constants)
 #   - declare global: ENTRIES, SEL_NAMES, SEL_TYPES, PANE_COUNTS (associative),
 #     KNOWN_AGENTS (associative), LIVE_PANES (associative),
 #     SESS_START, _COLLECT_TICK, _LAST_STATUS_MTIME
 #
 # Populates: ENTRIES[], SEL_NAMES[], SEL_TYPES[], PANE_COUNTS[], SESS_START,
-#            SUMMARY_WORKING, SUMMARY_WAITING, SUMMARY_DONE, SUMMARY_TOTAL,
-#            SUMMARY_HAS_WORKING
+#            SUMMARY_WORKING, SUMMARY_DONE, SUMMARY_TOTAL, SUMMARY_HAS_WORKING
 # Persists across calls: LIVE_PANES[]
 # Sets _COLLECT_CHANGED=1 when data was rebuilt, 0 when skipped (no changes).
 
@@ -21,7 +20,7 @@ _COLLECT_LIB_LOADED=1
 # ─── State priority ───────────────────────────────────────────────
 _state_pri() {
     case "$1" in
-        working) echo 5 ;; wait)    echo 4 ;; ask)     echo 3 ;;
+        working) echo 4 ;; ask)     echo 3 ;;
         done)    echo 2 ;; parked)  echo 1 ;; *)       echo 0 ;;
     esac
 }
@@ -83,7 +82,6 @@ _reconcile_interrupted() {
 
 collect_data() {
     _reconcile_interrupted
-    expire_wait_timers >/dev/null
 
     local SIDEBAR_MODE
     SIDEBAR_MODE=$(_sidebar_mode)
@@ -92,9 +90,9 @@ collect_data() {
     (( ++_COLLECT_TICK >= 10 )) && { _COLLECT_TICK=0; _LAST_STATUS_MTIME=""; }
     local cur_mtime
     if [[ "$(uname)" == "Darwin" ]]; then
-        cur_mtime=$(stat -f %m "$STATUS_DIR" "$PARKED_DIR" "$WAIT_DIR" "$PANE_DIR" "$REFRESH_FILE" 2>/dev/null)
+        cur_mtime=$(stat -f %m "$STATUS_DIR" "$PARKED_DIR" "$PANE_DIR" "$REFRESH_FILE" 2>/dev/null)
     else
-        cur_mtime=$(stat -c %Y "$STATUS_DIR" "$PARKED_DIR" "$WAIT_DIR" "$PANE_DIR" "$REFRESH_FILE" 2>/dev/null)
+        cur_mtime=$(stat -c %Y "$STATUS_DIR" "$PARKED_DIR" "$PANE_DIR" "$REFRESH_FILE" 2>/dev/null)
     fi
     local refresh_token=""
     [ -f "$REFRESH_FILE" ] && refresh_token=$(<"$REFRESH_FILE")
@@ -110,13 +108,9 @@ collect_data() {
     SEL_NAMES=()
     SEL_TYPES=()
     SUMMARY_WORKING=0
-    SUMMARY_WAITING=0
     SUMMARY_DONE=0
     SUMMARY_TOTAL=0
     SUMMARY_HAS_WORKING=0
-
-    local now
-    printf -v now '%(%s)T' -1
 
     # ── 1+2. Session + pane data (single tmux call) ────────────
     declare -A sess_state sess_extra sess_ssh sess_seen
@@ -166,26 +160,14 @@ collect_data() {
         if [ -f "$STATUS_DIR/${sname}.status" ]; then
             status=$(<"$STATUS_DIR/${sname}.status")
         fi
+        if [ "$status" = "wait" ]; then
+            status="done"
+            write_session_status "$sname" "done"
+        fi
         if [ "$status" = "parked" ] && ! session_is_fully_parked "$sname"; then
             status=""
         fi
-        if [ "$status" = "wait" ] && [ ! -f "$WAIT_DIR/${sname}.wait" ]; then
-            status=""
-        fi
         [ -n "$status" ] && state="$status"
-
-        if [ "$state" = "wait" ]; then
-            local wf="$WAIT_DIR/${sname}.wait"
-            if [ -f "$wf" ]; then
-                local expiry
-                expiry=$(<"$wf")
-                if [ -n "$expiry" ] && (( expiry > now )); then
-                    extra="$(( (expiry - now + 59) / 60 ))m"
-                else
-                    state="done"
-                fi
-            fi
-        fi
         rm -f "$STATUS_DIR/${sname}.unread" "$STATUS_DIR/${sname}-remote.unread" 2>/dev/null
 
         sess_state[$sname]="$state"
@@ -264,7 +246,7 @@ collect_data() {
 
         stale_agent_sessions[$owner]=1
         rm -f "$agent_file" "$pane_dir/${owner}_${pid_id}.status"
-        rm -f "$WAIT_DIR/${owner}_${pid_id}.wait" "$PARKED_DIR/${owner}_${pid_id}.parked"
+        rm -f "$PARKED_DIR/${owner}_${pid_id}.parked"
     done
 
     # Build sess_agents from KNOWN_AGENTS + per-pane status files.
@@ -279,15 +261,8 @@ collect_data() {
         if [ -f "$pane_file" ]; then
             pane_status=$(<"$pane_file")
         fi
-        # Check per-pane parked/wait overrides
+        # Check the per-pane parked override.
         [ -f "$PARKED_DIR/${owner}_${pid_id}.parked" ] && pane_status="parked"
-        local pwf="$WAIT_DIR/${owner}_${pid_id}.wait"
-        if [ -f "$pwf" ]; then
-            local exp=$(<"$pwf")
-            if [ -n "$exp" ] && (( exp > now )); then
-                pane_status="wait"
-            fi
-        fi
         [ -z "$pane_status" ] && pane_status="${sess_state[$owner]:-done}"
         sess_agents[$owner]+="${pid_id}:${agent_name}:${pane_status} "
         pane_agent_name[$key]="$agent_name"
@@ -295,14 +270,12 @@ collect_data() {
     done
 
     # If stale metadata was the session's only evidence of a local agent, make
-    # the session genuinely agent-free. Explicit wait/park and remote states
-    # remain user-controlled.
+    # the session genuinely agent-free. Explicit park and remote states remain
+    # user-controlled.
     for owner in "${!stale_agent_sessions[@]}"; do
         [ -n "${sess_agents[$owner]:-}" ] && continue
         [ -n "${sess_ssh[$owner]:-}" ] && continue
-        case "${sess_state[$owner]:-noagent}" in
-            wait|parked) continue ;;
-        esac
+        [ "${sess_state[$owner]:-noagent}" = "parked" ] && continue
         sess_state[$owner]="noagent"
         rm -f "$STATUS_DIR/${owner}.status"
     done
@@ -310,7 +283,7 @@ collect_data() {
     # ── 5. Re-derive session state from per-pane statuses ──────
     for sname in "${!sess_agents[@]}"; do
         local cur_st="${sess_state[$sname]}"
-        [[ "$cur_st" == "wait" || "$cur_st" == "parked" ]] && continue
+        [[ "$cur_st" == "parked" ]] && continue
         local best_pri=-1 best_st="$cur_st"
         if [ -n "${stale_agent_sessions[$sname]:-}" ]; then
             best_pri=0
@@ -341,10 +314,6 @@ collect_data() {
                 ((SUMMARY_TOTAL++))
                 SUMMARY_HAS_WORKING=1
                 ;;
-            wait)
-                ((SUMMARY_WAITING++))
-                ((SUMMARY_TOTAL++))
-                ;;
             done|ask)
                 ((SUMMARY_DONE++))
                 ((SUMMARY_TOTAL++))
@@ -358,7 +327,7 @@ collect_data() {
     PANE_COUNTS=()
     for sname in "${!sess_agents[@]}"; do
         local agents="${sess_agents[$sname]}"
-        local pw=0 pd=0 pwt=0 pa=0 count=0
+        local pw=0 pd=0 pa=0 count=0
         local seen=""
         for ap in $agents; do
             local pid="${ap%%:*}"
@@ -366,11 +335,11 @@ collect_data() {
             seen+="$pid "
             local rest="${ap#*:}"; local ps="${rest#*:}"
             case "$ps" in
-                working) ((pw++)) ;; done) ((pd++)) ;; ask) ((pa++)) ;; wait) ((pwt++)) ;;
+                working) ((pw++)) ;; done) ((pd++)) ;; ask) ((pa++)) ;;
             esac
             ((count++))
         done
-        (( count > 1 )) && PANE_COUNTS[$sname]="${pw}:${pd}:${pwt}:${pa}"
+        (( count > 1 )) && PANE_COUNTS[$sname]="${pw}:${pd}:${pa}"
     done
 
     # ── 6. Collapse single-worktree parents ────────────────────
@@ -685,7 +654,6 @@ collect_data() {
         [[ -n "${sess_seen[$sname]:-}" ]] && continue
         rm -f "$sf" "$STATUS_DIR/${sname}-remote.status"
         rm -f "$PARKED_DIR/${sname}.parked" "$PARKED_DIR/${sname}_"*.parked
-        rm -f "$WAIT_DIR/${sname}.wait" "$WAIT_DIR/${sname}_"*.wait
         rm -f "$STATUS_DIR/panes/${sname}_"*.status "$STATUS_DIR/panes/${sname}_"*.agent
     done
 

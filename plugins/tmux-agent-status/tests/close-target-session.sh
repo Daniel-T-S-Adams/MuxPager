@@ -10,11 +10,10 @@ TEST_HOME="$TMP_DIR/home"
 FAKE_BIN="$TMP_DIR/bin"
 STATUS_DIR="$TEST_HOME/.cache/tmux-agent-status"
 PANE_DIR="$STATUS_DIR/panes"
-WAIT_DIR="$STATUS_DIR/wait"
 PARKED_DIR="$STATUS_DIR/parked"
 LOG_FILE="$TMP_DIR/tmux.log"
 
-mkdir -p "$FAKE_BIN" "$STATUS_DIR" "$PANE_DIR" "$WAIT_DIR" "$PARKED_DIR"
+mkdir -p "$FAKE_BIN" "$STATUS_DIR" "$PANE_DIR" "$PARKED_DIR"
 
 cat > "$FAKE_BIN/tmux" <<EOF
 #!/usr/bin/env bash
@@ -54,7 +53,6 @@ echo "done" > "$PANE_DIR/repo_%1.status"
 echo "claude" > "$PANE_DIR/repo_%1.agent"
 echo "working" > "$PANE_DIR/repo_%2.status"
 echo "codex" > "$PANE_DIR/repo_%2.agent"
-echo "1" > "$WAIT_DIR/repo.wait"
 : > "$PARKED_DIR/repo_%2.parked"
 
 PATH="$FAKE_BIN:$PATH" \
@@ -69,8 +67,8 @@ if [ -e "$PANE_DIR/repo_%1.status" ] || [ -e "$PANE_DIR/repo_%2.agent" ]; then
     echo "Assertion failed: closing a session should remove pane metadata" >&2
     exit 1
 fi
-if [ -e "$WAIT_DIR/repo.wait" ] || [ -e "$PARKED_DIR/repo_%2.parked" ]; then
-    echo "Assertion failed: closing a session should remove wait and parked markers" >&2
+if [ -e "$PARKED_DIR/repo_%2.parked" ]; then
+    echo "Assertion failed: closing a session should remove parked markers" >&2
     exit 1
 fi
 if ! grep -Fq "kill-session -t repo" "$LOG_FILE"; then

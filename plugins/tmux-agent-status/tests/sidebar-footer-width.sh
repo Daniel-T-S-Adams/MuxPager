@@ -7,7 +7,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../scripts/lib/render-text.sh
 source "$REPO_DIR/scripts/lib/render-text.sh"
 
-footer=' ⏎ select  / search  w wait  p park  m mode  q quit'
+footer=' ⏎ select  / search  p park  m mode  q quit'
 fitted=$(fit_text_to_width "$footer" 42)
 
 if (( ${#fitted} > 42 )); then

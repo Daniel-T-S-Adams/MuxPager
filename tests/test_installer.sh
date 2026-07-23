@@ -32,6 +32,7 @@ root = Path(sys.argv[2])
     json.dumps(
         {
             "model": "existing-model",
+            "permissions": {"allow": ["WebFetch(domain:example.com)"]},
             "hooks": {
                 "Stop": [
                     {
@@ -124,10 +125,12 @@ for path in (home / ".codex/hooks.json", home / ".claude/settings.json"):
         for command in commands
         if "/.local/libexec/muxpager/hooks/" in command
     ]
-    assert len(managed) == 4
+    assert len(managed) == 5
 
 claude = json.loads((home / ".claude/settings.json").read_text(encoding="utf-8"))
 assert claude["model"] == "existing-model"
+assert "WebFetch(domain:example.com)" in claude["permissions"]["allow"]
+assert "mcp__muxpager__ask_choice" in claude["permissions"]["allow"]
 assert any(
     hook.get("command") == "printf unrelated-hook"
     for entry in claude["hooks"]["Stop"]
@@ -139,6 +142,12 @@ assert env_file.exists()
 assert oct(env_file.stat().st_mode & 0o777) == "0o600"
 assert (home / ".local/bin/tmux-telegram-bridge").resolve() == (
     root / "telegram/bridge.py"
+)
+assert (home / ".local/bin/muxpager-choice-server").resolve() == (
+    root / "questions/mcp_server.py"
+)
+assert (home / ".local/libexec/muxpager/questions").resolve() == (
+    root / "questions"
 )
 assert not (home / ".config/tmux-agent-console/install.json").exists()
 assert (home / ".config/muxpager/install.json").exists()
@@ -161,12 +170,15 @@ assert tmux_config.strip() == "set -g status-position top"
 
 claude = json.loads((home / ".claude/settings.json").read_text(encoding="utf-8"))
 assert claude["model"] == "existing-model"
+assert claude["permissions"]["allow"] == ["WebFetch(domain:example.com)"]
 assert "/.local/libexec/muxpager/hooks/" not in json.dumps(claude)
 assert "printf unrelated-hook" in json.dumps(claude)
 
 assert not (home / ".codex/hooks.json").exists()
 assert (home / ".config/tmux-telegram-bridge/env").exists()
 assert not (home / ".local/bin/tmux-telegram-bridge").exists()
+assert not (home / ".local/bin/muxpager-choice-server").exists()
+assert not (home / ".local/libexec/muxpager/questions").exists()
 PY
 
 echo "unified installer checks passed"

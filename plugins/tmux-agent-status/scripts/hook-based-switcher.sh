@@ -6,7 +6,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATUS_DIR="$HOME/.cache/tmux-agent-status"
 PARKED_DIR="$STATUS_DIR/parked"
 PANE_DIR="$STATUS_DIR/panes"
-WAIT_DIR="$STATUS_DIR/wait"
 
 # shellcheck source=lib/session-status.sh
 source "$SCRIPT_DIR/lib/session-status.sh"
@@ -18,7 +17,6 @@ status_icon() {
         working) printf '\033[1;33m⣾\033[0m' ;;
         # A tracked agent that is finished/idle or asking is waiting on you.
         done|ask) printf '\033[1;31m?\033[0m' ;;
-        wait) printf '\033[1;36m⏸\033[0m' ;;
         parked) printf '\033[1;35mP\033[0m' ;;
         # No tracked agent in this target: ordinary shell/non-agent pane.
         *) printf '\033[1;32m✓\033[0m' ;;
@@ -97,15 +95,14 @@ toggle_mode() {
     fi
 }
 
-# Display priority for agents mode (ask first, then done, then working,
-# then wait, then parked). Distinct from status_priority used elsewhere
+# Display priority for agents mode (ask first, then done, then working, then
+# parked). Distinct from status_priority used elsewhere
 # for "best status" rollups.
 agents_mode_priority() {
     case "$1" in
         ask)     echo 5 ;;
         done)    echo 4 ;;
         working) echo 3 ;;
-        wait)    echo 2 ;;
         parked)  echo 1 ;;
         *)       echo 0 ;;
     esac
@@ -308,7 +305,7 @@ get_agents_rows() {
         local status
         status=$(get_pane_status "$session" "$pane_id")
         case "$status" in
-            working|done|ask|wait|parked) ;;
+            working|done|ask|parked) ;;
             *) continue ;;
         esac
 
@@ -435,15 +432,6 @@ perform_full_reset() {
     # Clear PID files
     find "$STATUS_DIR" -type f -name "*.pid" -delete 2>/dev/null
 
-    # Clear wait files and normalize matching wait statuses back to done
-    for wait_file in "$STATUS_DIR/wait"/*.wait; do
-        [ ! -f "$wait_file" ] && continue
-        session_name=$(basename "$wait_file" .wait)
-        [ -f "$STATUS_DIR/${session_name}.status" ] && echo "done" > "$STATUS_DIR/${session_name}.status" 2>/dev/null
-        [ -f "$STATUS_DIR/${session_name}-remote.status" ] && echo "done" > "$STATUS_DIR/${session_name}-remote.status" 2>/dev/null
-        rm -f "$wait_file" 2>/dev/null
-    done
-
     # Clear temp files
     rm -f "$STATUS_DIR"/.*.status.tmp 2>/dev/null
 
@@ -453,21 +441,12 @@ perform_full_reset() {
         session_name=$(basename "$status_file" .status)
         [[ "$session_name" == *"-remote" ]] && continue
 
-        if [ -f "$STATUS_DIR/wait/${session_name}.wait" ]; then
-            continue
-        fi
-
         if session_is_fully_parked "$session_name"; then
             if ! session_has_agent_process "$session_name"; then
                 rm -f "$PARKED_DIR/${session_name}_"*.parked 2>/dev/null
                 rm -f "$status_file"
             fi
             continue
-        fi
-
-        status_value=$(cat "$status_file" 2>/dev/null)
-        if [ "$status_value" = "wait" ]; then
-            echo "done" > "$status_file" 2>/dev/null
         fi
 
         if ! session_has_agent_process "$session_name"; then
@@ -681,13 +660,12 @@ selected=$(emit_rows_for_mode | fzf \
     --preview='id={2}; tmux capture-pane -e -p -t "${id##*:}" -S -120 2>/dev/null' \
     --preview-window="right,65%,border-left,wrap${preview_hidden_flag}" \
     --prompt="  " \
-    --header=$'\033[90mctrl-f mode  tab expand/preview  ctrl-x close  ctrl-p park  ctrl-w wait  ctrl-r reset\033[0m' \
+    --header=$'\033[90mctrl-f mode  tab expand/preview  ctrl-x close  ctrl-p park  ctrl-r reset\033[0m' \
     --header-first \
     --bind="ctrl-j:down,ctrl-k:up" \
     --bind="tab:transform(bash '$0' --state-dir '$state_dir' --tab-action)" \
     --bind="ctrl-f:$ctrl_f_bind" \
     --bind="ctrl-p:execute-silent(bash '$SCRIPT_DIR/park-target.sh' {2} {1})+reload(bash '$0' --state-dir '$state_dir' --rows)" \
-    --bind="ctrl-w:execute-silent(bash '$SCRIPT_DIR/wait-target.sh' {2} {1})+abort" \
     --bind="ctrl-r:reload(bash '$0' --state-dir '$state_dir' --reset-rows)" \
     --bind="ctrl-x:transform(bash '$0' --state-dir '$state_dir' --close-fzf-actions {2} {1})" \
     --layout=reverse \

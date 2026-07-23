@@ -13,7 +13,7 @@ Demo video: [`demo/full.mp4`](demo/full.mp4)
 - Persistent sidebar in every tmux session
 - Hierarchical `fzf` target switcher for quick jumps and close actions
 - Hook-based Claude Code and Codex tracking
-- Wait and park modes for triaging work
+- Park mode for putting work aside without closing it
 - Compact status-line summary with finish notifications
 - Works across multi-pane sessions, worktrees, and remote tmux sessions
 
@@ -52,7 +52,7 @@ By default the plugin:
 - Appends the live summary to `status-right`
 - Starts the sidebar collector daemon
 - Auto-creates a sidebar in existing and new tmux sessions
-- Binds the popup switcher, wait, park, and next-ready actions
+- Binds the popup switcher, park, and next-ready actions
 
 ## Claude Code Setup
 
@@ -250,7 +250,7 @@ Without hooks, the collector still auto-detects a running `devin` process inside
 
 Integrate any AI coding tool with either of these approaches:
 
-1. Write `working`, `done`, or `wait` to `~/.cache/tmux-agent-status/<session>.status`
+1. Write `working` or `done` to `~/.cache/tmux-agent-status/<session>.status`
 2. For pane-level parking or per-pane state, write to `~/.cache/tmux-agent-status/panes/<session>_<pane>.status` and `~/.cache/tmux-agent-status/parked/<session>_<pane>.parked`
 3. Extend the collector scan in [`scripts/lib/collect.sh`](scripts/lib/collect.sh) if you want automatic process-based tracking
 
@@ -267,13 +267,12 @@ Default mode is sidebar-first:
 | `prefix + S` | Open the hierarchical `fzf` target switcher |
 | `prefix + o` | Focus or create the sidebar |
 | `prefix + N` | Jump to the next inbox item in inbox order |
-| `prefix + W` | Put the current session or pane into timed wait mode |
-| `prefix + p` | Park the current session or pane for later |
+| `prefix + p` | Park the current session for later |
 
 The status bar shows live activity:
 
 - `⚡ agent working`
-- `⚡ 3 working ⏸ 1 waiting ✓ 2 done`
+- `⚡ 3 working ✓ 2 done`
 - `✓ All agents ready`
 
 Parked sessions stay visible in the sidebar and switcher, but are excluded from the status-line summary.
@@ -286,16 +285,16 @@ Inside the popup switcher:
 - `Ctrl-X` on a window immediately closes that window and all child panes
 - `Ctrl-X` on a session immediately closes that session and all child windows and panes
 - `Ctrl-P` parks or unparks the selected session, window, or pane
-- `Ctrl-W` opens wait mode for the selected target, or cancels an existing wait
 - `Ctrl-R` resets tracked state
 
 Inside the sidebar:
 
-- `x`, `p`, and `w` perform the same close, park, and wait actions without interfering with popup search input
+- `x` and `p` perform the same close and park actions without interfering with
+  popup search input
 
 `prefix + N` follows the same top-to-bottom order as the `INBOX` section. The inbox is ordered by session name, then by tmux window order within each session.
 
-Parking, waiting, and closing always apply to the selected scope only:
+Parking and closing always apply to the selected scope only:
 
 - selecting a session row affects the whole session
 - selecting a window row affects only that window
@@ -309,7 +308,6 @@ In multi-window sessions, sidebar and inbox rows labeled with a window name oper
 set -g @agent-status-key "S"
 set -g @agent-sidebar-key "o"
 set -g @agent-next-done-key "N"
-set -g @agent-wait-key "W"
 set -g @agent-park-key "p"
 
 set -g @agent-switcher-style "both"        # popup | sidebar | both
@@ -324,9 +322,9 @@ set -g @agent-switcher-default-mode "tree"  # tree | agents
 
 `@agent-switcher-style "both"` is the default. It keeps the persistent sidebar and leaves `prefix + S` as the lightweight popup switcher.
 
-The switcher popup has two views. **Tree** (default) is the hierarchical session/window/pane list; tab expands/collapses. **Agents** is a flat list of every agent pane (any status) sorted by priority — `ask`, `done`, `working`, `wait`, `parked` — with a live preview pane and 2-second refresh. Press `ctrl-f` inside the popup to toggle between views.
+The switcher popup has two views. **Tree** (default) is the hierarchical session/window/pane list; tab expands/collapses. **Agents** is a flat list of every agent pane (any status) sorted by priority — `ask`, `done`, `working`, `parked` — with a live preview pane and 2-second refresh. Press `ctrl-f` inside the popup to toggle between views.
 
-The sidebar has the same two views, toggled with `m` from inside the sidebar pane (alongside `w`/`p`/`x` for wait/park/close). In **tree** mode the SESSIONS section lists every session and collapses single-agent sessions to one row; the INBOX section surfaces `done`/`ask` work. In **agents** mode the SESSIONS section is filtered to sessions/worktrees that contain agent panes and every agent pane is expanded; INBOX is suppressed because it would duplicate the same rows.
+The sidebar has the same two views, toggled with `m` from inside the sidebar pane (alongside `p`/`x` for park/close). In **tree** mode the SESSIONS section lists every session and collapses single-agent sessions to one row; the INBOX section surfaces `done`/`ask` work. In **agents** mode the SESSIONS section is filtered to sessions/worktrees that contain agent panes and every agent pane is expanded; INBOX is suppressed because it would duplicate the same rows.
 
 ## Notification Sounds
 
@@ -366,7 +364,7 @@ Works with cloud VMs, GPU boxes, and any SSH-accessible tmux host.
 └──────────────┘              │ status/                  │
                               │ <session>.status         │
 ┌──────────────┐    hooks     │ panes/*.status           │
-│ Codex CLI    ├─────────────►│ wait/*.wait              │
+│ Codex CLI    ├─────────────►│ final messages           │
 └──────────────┘              │ parked/*.parked          │
                               └─────────────┬────────────┘
 ┌──────────────┐ status files               │

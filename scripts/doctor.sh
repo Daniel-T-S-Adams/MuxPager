@@ -60,6 +60,19 @@ else
     fail "Telegram bridge launcher is missing or points elsewhere"
 fi
 
+if [ "$(readlink -f "$HOME/.local/bin/muxpager-choice-server" 2>/dev/null)" = \
+    "$PROJECT_ROOT/questions/mcp_server.py" ]; then
+    pass "choice-question server points at this checkout"
+else
+    fail "choice-question server is missing or points elsewhere"
+fi
+
+if python3 "$PROJECT_ROOT/scripts/manage-agent-mcp.py" check >/dev/null 2>&1; then
+    pass "MuxPager choice questions are registered with installed agents"
+else
+    fail "MuxPager choice questions are not registered correctly"
+fi
+
 if tmux list-sessions >/dev/null 2>&1; then
     configured_root="$(
         tmux show-environment -g MUXPAGER_ROOT 2>/dev/null |

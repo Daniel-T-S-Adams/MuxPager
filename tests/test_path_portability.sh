@@ -19,6 +19,7 @@ cp -a \
     "$PROJECT_ROOT/.tmux.conf" \
     "$PROJECT_ROOT/bin" \
     "$PROJECT_ROOT/plugins" \
+    "$PROJECT_ROOT/questions" \
     "$PROJECT_ROOT/scripts" \
     "$PROJECT_ROOT/telegram" \
     "$RELOCATED_ROOT/"
@@ -65,6 +66,16 @@ PY
 if [ "$(readlink -f "$TEST_HOME/.local/bin/tmux-telegram-bridge")" != \
     "$RELOCATED_ROOT/telegram/bridge.py" ]; then
     echo "Telegram bridge runtime link points at the wrong checkout" >&2
+    exit 1
+fi
+if [ "$(readlink -f "$TEST_HOME/.local/bin/muxpager-choice-server")" != \
+    "$RELOCATED_ROOT/questions/mcp_server.py" ]; then
+    echo "choice server runtime link points at the wrong checkout" >&2
+    exit 1
+fi
+if [ "$(readlink -f "$TEST_HOME/.local/libexec/muxpager/questions")" != \
+    "$RELOCATED_ROOT/questions" ]; then
+    echo "choice support runtime link points at the wrong checkout" >&2
     exit 1
 fi
 if [ "$(readlink -f "$TEST_HOME/.local/libexec/muxpager/hooks")" != \

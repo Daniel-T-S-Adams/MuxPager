@@ -62,6 +62,24 @@ systemctl --user restart tmux-telegram-bridge
 
 Then watch the pane and service log during another short round-trip test.
 
+## A choice question stays in the terminal
+
+Restart the affected Codex or Claude process after running `./install.sh`.
+Existing agents do not discover newly registered MCP tools mid-session. Check
+the registration with:
+
+```bash
+scripts/doctor.sh
+codex mcp get muxpager --json
+claude mcp get muxpager
+```
+
+Both installed agents should point at
+`~/.local/bin/muxpager-choice-server`. Also verify that the Telegram bridge is
+active. Native single-choice tools are redirected to MuxPager; if an agent
+still opens a terminal picker, mention the `MuxPager ask_choice` tool explicitly
+and inspect its `/hooks` view for the managed PreToolUse hook.
+
 ## Topic did not reopen
 
 The stable identity includes session name, window index, pane index, and agent

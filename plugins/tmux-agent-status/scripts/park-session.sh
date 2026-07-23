@@ -21,7 +21,6 @@ if [ -f "$NEXT_DONE_SCRIPT" ]; then
     bash "$NEXT_DONE_SCRIPT" --exclude "$current_session" "S" >/dev/null 2>&1 || true
 fi
 
-rm -f "$WAIT_DIR/$current_session.wait"
 : > "$PARKED_DIR/$current_session.parked"
 
 if is_ssh_session "$current_session"; then
@@ -37,7 +36,6 @@ while IFS= read -r pane_id; do
     [ -z "$pane_id" ] && continue
     : > "$PARKED_DIR/${current_session}_${pane_id}.parked"
     echo "parked" > "$PANE_DIR/${current_session}_${pane_id}.status"
-    rm -f "$WAIT_DIR/${current_session}_${pane_id}.wait" 2>/dev/null
 done < <(tmux list-panes -t "$current_session" -F '#{pane_id}' 2>/dev/null)
 
 tmux display-message "Session $current_session parked for later"

@@ -10,11 +10,19 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
 from typing import Any
 from urllib import error, parse, request
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from questions.store import ACTIVE_STATES, ChoiceStore  # noqa: E402
 
 
 LOG = logging.getLogger("tmux-telegram-bridge")
@@ -74,7 +82,7 @@ def parse_agent_rows(output: str) -> list[AgentPane]:
         pane_id, session, window_index, window_name, pane_index, agent, status = fields
         if agent not in {"claude", "codex", "devin"}:
             continue
-        if status not in {"working", "done", "ask", "wait", "parked"}:
+        if status not in {"working", "done", "ask", "parked"}:
             status = "done"
         panes.append(
             AgentPane(
@@ -95,7 +103,6 @@ def status_icon(status: str) -> str:
         "working": "🟡",
         "done": "❓",
         "ask": "❓",
-        "wait": "⏸",
         "parked": "📌",
     }.get(status, "❓")
 
@@ -105,7 +112,6 @@ def status_text(status: str) -> str:
         "working": "working",
         "done": "waiting for you",
         "ask": "asking for input",
-        "wait": "snoozed",
         "parked": "parked",
     }.get(status, status)
 
@@ -359,6 +365,7 @@ class Bridge:
         poll_timeout: int = 5,
         notify: bool = True,
         close_after: int = 60,
+        choice_store: ChoiceStore | None = None,
     ) -> None:
         self.telegram = telegram
         self.tmux = tmux
@@ -367,6 +374,7 @@ class Bridge:
         self.poll_timeout = max(1, min(poll_timeout, 25))
         self.notify = notify
         self.close_after = max(0, close_after)
+        self.choice_store = choice_store or ChoiceStore(state_path.parent / "choices")
         self.state = self._load_state()
         self._bot_id: int | None = None
 
@@ -418,6 +426,7 @@ class Bridge:
         text: str,
         thread_id: int | None = None,
         disable_notification: bool = False,
+        reply_markup: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         text = trim_middle(text, TELEGRAM_TEXT_LIMIT)
         params: dict[str, Any] = {
@@ -427,6 +436,8 @@ class Bridge:
         }
         if thread_id is not None:
             params["message_thread_id"] = thread_id
+        if reply_markup is not None:
+            params["reply_markup"] = reply_markup
         result = self.telegram.call("sendMessage", params)
         if not isinstance(result, dict):
             raise TelegramError("Telegram sendMessage returned no Message")
@@ -737,7 +748,327 @@ class Bridge:
                 record["closed"] = True
             self._save_state()
 
+    @staticmethod
+    def _choice_option(
+        choice: dict[str, Any], option_id: str
+    ) -> dict[str, str] | None:
+        options = choice.get("options")
+        if not isinstance(options, list):
+            return None
+        for option in options:
+            if isinstance(option, dict) and option.get("id") == option_id:
+                return {
+                    "id": str(option["id"]),
+                    "label": str(option.get("label") or ""),
+                    "description": str(option.get("description") or ""),
+                }
+        return None
+
+    @staticmethod
+    def _choice_text(choice: dict[str, Any], footer: str | None = None) -> str:
+        question = str(choice.get("question") or "Choose one option")
+        lines = [f"❓ {question}", ""]
+        options = choice.get("options")
+        if isinstance(options, list):
+            for index, option in enumerate(options):
+                if not isinstance(option, dict):
+                    continue
+                label = str(option.get("label") or f"Option {index + 1}")
+                description = str(option.get("description") or "")
+                line = f"{index + 1}. {label}"
+                if description:
+                    line += f" — {description}"
+                lines.append(line)
+        if footer:
+            lines.extend(("", footer))
+        else:
+            lines.extend(("", "Choose one answer:"))
+        return trim_middle("\n".join(lines), TELEGRAM_TEXT_LIMIT)
+
+    @staticmethod
+    def _choice_keyboard(choice: dict[str, Any]) -> dict[str, Any]:
+        request_id = str(choice["id"])
+        rows: list[list[dict[str, str]]] = []
+        for option in choice.get("options", []):
+            if not isinstance(option, dict):
+                continue
+            rows.append(
+                [
+                    {
+                        "text": str(option.get("label") or "Choose"),
+                        "callback_data": f"mq:{request_id}:{option.get('id')}",
+                    }
+                ]
+            )
+        rows.append(
+            [{"text": "Cancel", "callback_data": f"mq:{request_id}:c"}]
+        )
+        return {"inline_keyboard": rows}
+
+    def _edit_choice_message(
+        self, choice: dict[str, Any], footer: str, *, finalized: bool = False
+    ) -> None:
+        chat_id = choice.get("telegram_chat_id")
+        message_id = choice.get("telegram_message_id")
+        if not isinstance(chat_id, int) or not isinstance(message_id, int):
+            return
+        try:
+            self.telegram.call(
+                "editMessageText",
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": self._choice_text(choice, footer),
+                    "reply_markup": {"inline_keyboard": []},
+                },
+            )
+        except TelegramError as exc:
+            if "message is not modified" in str(exc).lower() and finalized:
+                self.choice_store.update(
+                    str(choice["id"]),
+                    lambda current: {
+                        **current,
+                        "telegram_finalized": True,
+                    },
+                )
+                return
+            LOG.warning("Could not update choice request %s: %s", choice.get("id"), exc)
+            return
+        if finalized:
+            self.choice_store.update(
+                str(choice["id"]),
+                lambda current: {
+                    **current,
+                    "telegram_finalized": True,
+                },
+            )
+
+    def _publish_choice(self, choice: dict[str, Any], pane: AgentPane) -> None:
+        chat_id = self._group_chat_id()
+        if chat_id is None or choice.get("state") != "pending":
+            return
+        topic = self._ensure_topic(pane)
+        message = self._send_message(
+            chat_id,
+            self._choice_text(choice),
+            int(topic["thread_id"]),
+            reply_markup=self._choice_keyboard(choice),
+        )
+        message_id = message.get("message_id")
+        if not isinstance(message_id, int):
+            raise TelegramError("Telegram choice message has no message id")
+
+        def attach_message(current: dict[str, Any]) -> dict[str, Any]:
+            current["telegram_chat_id"] = chat_id
+            current["telegram_thread_id"] = int(topic["thread_id"])
+            current["telegram_message_id"] = message_id
+            if current.get("state") == "pending":
+                current["state"] = "published"
+                current["published_at"] = time.time()
+            return current
+
+        updated = self.choice_store.update(str(choice["id"]), attach_message)
+        if updated and updated.get("state") == "answered_locally":
+            self._edit_choice_message(
+                updated, "✓ Answered directly in tmux.", finalized=True
+            )
+
+    def _expire_choice(
+        self, choice: dict[str, Any], reason: str = "The agent is no longer running."
+    ) -> None:
+        now = time.time()
+
+        def expire(current: dict[str, Any]) -> dict[str, Any]:
+            if current.get("state") in ACTIVE_STATES:
+                current["state"] = "expired"
+                current["finished_at"] = now
+            return current
+
+        updated = self.choice_store.update(str(choice["id"]), expire)
+        if updated:
+            self._edit_choice_message(updated, f"⌛ {reason}", finalized=True)
+
+    def _deliver_choice(self, choice: dict[str, Any], pane: AgentPane) -> None:
+        now = time.time()
+
+        def begin_delivery(current: dict[str, Any]) -> dict[str, Any]:
+            if current.get("state") == "selected":
+                current["state"] = "delivering"
+                current["delivery_started_at"] = now
+            return current
+
+        delivering = self.choice_store.update(str(choice["id"]), begin_delivery)
+        if not delivering or delivering.get("state") != "delivering":
+            return
+
+        cancel_requested = bool(delivering.get("cancel_requested"))
+        if cancel_requested:
+            prompt = (
+                "The user cancelled this MuxPager choice question:\n"
+                f"{delivering.get('question', '')}\n\n"
+                "Do not assume one of the offered answers. Continue without that "
+                "choice, or ask a normal follow-up if the decision is still required."
+            )
+        else:
+            option = self._choice_option(
+                delivering, str(delivering.get("selected_option_id") or "")
+            )
+            if option is None:
+                self._expire_choice(delivering, "The selected option was invalid.")
+                return
+            prompt = (
+                "MuxPager choice response:\n"
+                f"Question: {delivering.get('question', '')}\n"
+                f"Selected answer: {option['label']}\n\n"
+                "Continue using this selection."
+            )
+
+        try:
+            self.tmux.send_message(pane.pane_id, prompt)
+        except TmuxError:
+            self.choice_store.update(
+                str(delivering["id"]),
+                lambda current: {
+                    **current,
+                    "state": (
+                        "selected"
+                        if current.get("state") == "delivering"
+                        else current.get("state")
+                    ),
+                },
+            )
+            raise
+
+        final_state = "cancelled" if cancel_requested else "delivered"
+
+        def finish_delivery(current: dict[str, Any]) -> dict[str, Any]:
+            if current.get("state") == "delivering":
+                current["state"] = final_state
+                current["finished_at"] = time.time()
+            return current
+
+        completed = self.choice_store.update(str(delivering["id"]), finish_delivery)
+        if completed:
+            if cancel_requested:
+                footer = "✕ Cancelled. The agent was notified."
+            else:
+                option = self._choice_option(
+                    completed, str(completed.get("selected_option_id") or "")
+                )
+                footer = (
+                    f"✓ Selected: {option['label']}"
+                    if option
+                    else "✓ Selection delivered."
+                )
+            self._edit_choice_message(completed, footer, finalized=True)
+
+    def _finalize_choice_message(self, choice: dict[str, Any]) -> None:
+        if choice.get("telegram_finalized"):
+            return
+        state = choice.get("state")
+        if state == "answered_locally":
+            footer = "✓ Answered directly in tmux."
+        elif state == "expired":
+            footer = "⌛ This question expired."
+        elif state == "superseded":
+            footer = "⌛ Replaced by a newer question."
+        elif state == "cancelled":
+            footer = "✕ Cancelled. The agent was notified."
+        elif state == "delivered":
+            option = self._choice_option(
+                choice, str(choice.get("selected_option_id") or "")
+            )
+            footer = (
+                f"✓ Selected: {option['label']}"
+                if option
+                else "✓ Selection delivered."
+            )
+        else:
+            return
+        self._edit_choice_message(choice, footer, finalized=True)
+
+    def _sync_choices(self, panes: list[AgentPane]) -> None:
+        pane_by_key = {pane.topic_key: pane for pane in panes}
+        now = time.time()
+        for choice in self.choice_store.all():
+            state = choice.get("state")
+            if state not in ACTIVE_STATES:
+                self._finalize_choice_message(choice)
+                continue
+            pane = pane_by_key.get(str(choice.get("topic_key") or ""))
+            if pane is None or pane.pane_id != choice.get("pane_id"):
+                self._expire_choice(choice)
+                continue
+            if state == "pending":
+                try:
+                    self._publish_choice(choice, pane)
+                except TelegramError as exc:
+                    LOG.warning(
+                        "Could not publish choice request %s: %s",
+                        choice.get("id"),
+                        exc,
+                    )
+                continue
+            if state == "selected":
+                if pane.status == "working":
+                    if not choice.get("telegram_selection_saved"):
+                        option = self._choice_option(
+                            choice, str(choice.get("selected_option_id") or "")
+                        )
+                        label = "Cancelled" if choice.get("cancel_requested") else (
+                            option["label"] if option else "Selection saved"
+                        )
+                        self._edit_choice_message(
+                            choice,
+                            f"⏳ {label}. Waiting for the agent to finish its "
+                            "current turn.",
+                        )
+                        self.choice_store.update(
+                            str(choice["id"]),
+                            lambda current: {
+                                **current,
+                                "telegram_selection_saved": True,
+                            },
+                        )
+                    continue
+                try:
+                    self._deliver_choice(choice, pane)
+                except TmuxError as exc:
+                    LOG.warning(
+                        "Could not deliver choice request %s: %s",
+                        choice.get("id"),
+                        exc,
+                    )
+                continue
+            if state == "delivering":
+                started = float(choice.get("delivery_started_at", now))
+                if pane.status == "working":
+                    final_state = (
+                        "cancelled" if choice.get("cancel_requested") else "delivered"
+                    )
+                    completed = self.choice_store.update(
+                        str(choice["id"]),
+                        lambda current: {
+                            **current,
+                            "state": final_state,
+                            "finished_at": now,
+                        },
+                    )
+                    if completed:
+                        self._finalize_choice_message(completed)
+                elif now - started >= 5:
+                    self.choice_store.update(
+                        str(choice["id"]),
+                        lambda current: {
+                            **current,
+                            "state": "selected",
+                        },
+                    )
+        self.choice_store.prune(now)
+
     def _post_completion(self, pane: AgentPane) -> None:
+        if self.choice_store.active_for_topic(pane.topic_key):
+            return
         output, source = self.tmux.last_output(pane)
         heading = f"❓ Ready for you\n{source}:"
         available = TELEGRAM_TEXT_LIMIT - len(heading) - 2
@@ -761,6 +1092,7 @@ class Bridge:
                 LOG.warning("Could not create/reopen topic for %s: %s", pane.label, exc)
 
         self._close_missing_topics(live_keys, time.time())
+        self._sync_choices(panes)
 
         current_status = {pane.topic_key: pane.status for pane in panes}
         current_versions = {
@@ -804,10 +1136,15 @@ class Bridge:
         panes = self.tmux.agents()
         if not panes:
             return "No live Codex or Claude panes."
-        return "\n".join(
-            f"{status_icon(pane.status)} {pane.topic_name} — {status_text(pane.status)}"
-            for pane in panes
-        )
+        lines = []
+        for pane in panes:
+            state = (
+                "waiting for your button choice"
+                if self.choice_store.active_for_topic(pane.topic_key)
+                else status_text(pane.status)
+            )
+            lines.append(f"{status_icon(pane.status)} {pane.topic_name} — {state}")
+        return "\n".join(lines)
 
     def _acknowledge(self, message: dict[str, Any]) -> None:
         chat = message.get("chat") or {}
@@ -823,6 +1160,94 @@ class Bridge:
         except (TelegramError, KeyError, TypeError, ValueError):
             # A group may have reactions disabled. Delivery still succeeded.
             pass
+
+    def _answer_callback(
+        self, callback_id: Any, text: str = "", show_alert: bool = False
+    ) -> None:
+        if not isinstance(callback_id, str):
+            return
+        try:
+            self.telegram.call(
+                "answerCallbackQuery",
+                {
+                    "callback_query_id": callback_id,
+                    "text": text,
+                    "show_alert": show_alert,
+                },
+            )
+        except TelegramError as exc:
+            LOG.warning("Could not answer Telegram choice callback: %s", exc)
+
+    def _handle_callback_query(self, callback: dict[str, Any]) -> None:
+        callback_id = callback.get("id")
+        sender = callback.get("from") or {}
+        if not self._is_authorized(sender.get("id")):
+            self._answer_callback(callback_id, "Not authorized.", show_alert=True)
+            return
+        data = callback.get("data")
+        match = (
+            re.fullmatch(r"mq:([a-f0-9]{24}):([0-5]|c)", data)
+            if isinstance(data, str)
+            else None
+        )
+        if match is None:
+            self._answer_callback(callback_id, "Unknown or expired choice.")
+            return
+
+        choice = self.choice_store.get(match.group(1))
+        message = callback.get("message") or {}
+        chat = message.get("chat") or {}
+        if (
+            choice is None
+            or self._group_chat_id() != chat.get("id")
+            or choice.get("telegram_chat_id") != chat.get("id")
+            or choice.get("telegram_message_id") != message.get("message_id")
+            or choice.get("telegram_thread_id") != message.get("message_thread_id")
+        ):
+            self._answer_callback(
+                callback_id, "This choice is no longer valid.", show_alert=True
+            )
+            return
+
+        option_id = match.group(2)
+        if option_id != "c" and self._choice_option(choice, option_id) is None:
+            self._answer_callback(
+                callback_id, "That option is no longer valid.", show_alert=True
+            )
+            return
+
+        accepted = False
+
+        def select(current: dict[str, Any]) -> dict[str, Any]:
+            nonlocal accepted
+            if current.get("state") != "published":
+                return current
+            accepted = True
+            current["state"] = "selected"
+            current["selected_at"] = time.time()
+            current["cancel_requested"] = option_id == "c"
+            if option_id != "c":
+                current["selected_option_id"] = option_id
+            return current
+
+        selected = self.choice_store.update(str(choice["id"]), select)
+        if not accepted or selected is None:
+            self._answer_callback(callback_id, "This question was already answered.")
+            return
+
+        if option_id == "c":
+            callback_text = "Choice cancelled."
+        else:
+            option = self._choice_option(selected, option_id)
+            callback_text = f"Selected: {option['label']}" if option else "Selected."
+        self._answer_callback(callback_id, callback_text)
+
+        try:
+            panes = self.tmux.agents()
+        except TmuxError as exc:
+            LOG.warning("Could not refresh agents after a choice: %s", exc)
+            return
+        self._sync_choices(panes)
 
     def _handle_message(self, message: dict[str, Any]) -> None:
         chat = message.get("chat") or {}
@@ -883,7 +1308,8 @@ class Bridge:
                 "/status — show agent states\n"
                 "/send TEXT — send TEXT to this topic's agent\n\n"
                 "Ordinary text and agent slash commands are sent literally to "
-                "the agent mapped to the current topic.",
+                "the agent mapped to the current topic. When an agent asks one "
+                "multiple-choice question, answer with its topic buttons.",
             )
             return
 
@@ -915,6 +1341,14 @@ class Bridge:
                 "automatically unless it returns.",
             )
             return
+        active_choice = self.choice_store.active_for_topic(key)
+        if active_choice is not None:
+            self._reply(
+                message,
+                "This agent is waiting for a button choice. Select one of the "
+                "offered answers or Cancel before sending another message.",
+            )
+            return
         self.tmux.send_message(pane.pane_id, outgoing)
         self._acknowledge(message)
 
@@ -929,7 +1363,7 @@ class Bridge:
                     {
                         "offset": int(self.state.get("update_offset", 0)),
                         "timeout": self.poll_timeout,
-                        "allowed_updates": ["message"],
+                        "allowed_updates": ["message", "callback_query"],
                     },
                     http_timeout=self.poll_timeout + 10,
                 )
@@ -940,6 +1374,8 @@ class Bridge:
                     try:
                         if isinstance(update.get("message"), dict):
                             self._handle_message(update["message"])
+                        elif isinstance(update.get("callback_query"), dict):
+                            self._handle_callback_query(update["callback_query"])
                     except (TelegramError, TmuxError) as exc:
                         LOG.warning("Telegram update could not be handled: %s", exc)
                 self._sync_topics()
@@ -984,12 +1420,16 @@ def main() -> int:
     except ValueError:
         parser.error("TMUX_TELEGRAM_ALLOWED_USER_ID must be an integer")
 
+    default_state_home = Path(
+        os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))
+    ).expanduser()
     state_path = Path(
         os.environ.get(
             "TMUX_TELEGRAM_STATE_FILE",
-            str(Path.home() / ".local/state/tmux-telegram-bridge/state.json"),
+            str(default_state_home / "tmux-telegram-bridge/state.json"),
         )
     ).expanduser()
+    choice_dir_raw = os.environ.get("MUXPAGER_CHOICE_DIR", "").strip()
     bridge = Bridge(
         TelegramClient(token),
         tmux,
@@ -998,6 +1438,11 @@ def main() -> int:
         poll_timeout=int(os.environ.get("TMUX_TELEGRAM_POLL_TIMEOUT", "5")),
         notify=env_bool("TMUX_TELEGRAM_NOTIFY", True),
         close_after=int(os.environ.get("TMUX_TELEGRAM_CLOSE_AFTER", "60")),
+        choice_store=(
+            ChoiceStore(Path(choice_dir_raw).expanduser())
+            if choice_dir_raw
+            else ChoiceStore(state_path.parent / "choices")
+        ),
     )
     bridge.run()
     return 0

@@ -3,9 +3,13 @@
 [![CI](https://github.com/Daniel-T-S-Adams/MuxPager/actions/workflows/ci.yml/badge.svg)](https://github.com/Daniel-T-S-Adams/MuxPager/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A self-contained tmux workspace for running Codex and Claude across many
-sessions, seeing which agents need attention, and continuing those conversations
-from a private Telegram group.
+MuxPager is designed to run on an always-on Linux server. Keep Codex and Claude
+inside persistent tmux sessions there, then use a private Telegram group to read
+their replies and send new messages from your phone—even while your laptop is
+off.
+
+It also works on a local Linux machine, but the intended setup is a server that
+stays online so your tmux sessions and agents remain reachable.
 
 The tmux interface and Telegram topics are two views of the same live agent
 state. Both use the same process-liveness checks and exact end-of-turn messages,
@@ -26,18 +30,23 @@ tmux                                        Telegram
 
 ## Features
 
-- Permanent session sidebar and fast `fzf` switcher.
-- Correct `working`, `waiting`, `parked`, and non-agent classification for
-  Codex and Claude panes.
-- Process-tree validation so exited, stopped, and zombie agents cannot leave a
-  Bash pane looking like an agent.
-- A private Telegram forum group with one persistent topic per live agent pane.
-- Safe phone-to-agent messaging through private tmux paste buffers—never through
-  a shell command.
-- Fresh Telegram notifications containing the agent's exact final response.
-- Topic lifecycle management: close after exit, retain history, and reopen when
+- An always-visible session sidebar and a searchable keyboard-driven screen for
+  jumping between tmux sessions, windows, and panes.
+- Clear indicators showing whether each Codex or Claude agent is working,
+  waiting for you, or parked for later.
+- Live-process checks so a pane returns to being shown as an ordinary terminal
+  after its agent exits, rather than displaying stale agent activity.
+- A private Telegram group with one persistent topic for each live agent pane.
+- Phone-to-agent messaging that delivers text only to the selected live agent;
+  Telegram messages are never constructed as shell commands.
+- Telegram notifications containing the agent's exact final response.
+- Telegram buttons for a Codex or Claude question that has one answer chosen
+  from a short list; the selected answer returns to the correct agent pane.
+- Topics that close when an agent exits, retain their history, and reopen when
   the same logical agent returns.
-- Vendored plugin source with no plugin manager or network fetch at tmux startup.
+- Self-contained tmux setup: every required tmux component ships in this
+  repository, so starting tmux never downloads code or requires a plugin
+  manager.
 
 ## Requirements
 
@@ -85,6 +94,8 @@ The installer:
   tmux settings.
 - Merges the project hooks into `~/.codex/hooks.json` and
   `~/.claude/settings.json` without removing unrelated settings or hooks.
+- Registers MuxPager's local choice-question tool with installed Codex and
+  Claude CLIs.
 - Installs stable runtime links so the checkout can be moved and reinstalled.
 - Installs the Telegram bridge, private environment file, and systemd user
   service.
@@ -96,7 +107,7 @@ After the first install:
 1. Start a new tmux session, or reload the current server with
    `tmux source-file ~/.tmux.conf`.
 2. Restart any Codex and Claude processes that were already open.
-3. In Codex, open `/hooks`, review the four MuxPager user hooks, and trust them.
+3. In Codex, open `/hooks`, review the MuxPager user hooks, and trust them.
    Codex hooks are enabled by default; if you previously set
    `[features] hooks = false`, remove that override.
 4. In Claude Code, open `/hooks` and confirm the MuxPager user hooks appear.
@@ -115,21 +126,31 @@ for the agent-specific hook controls.
 Telegram is part of the main workflow, but its credentials must be created by
 you and remain outside Git:
 
-1. Open `@BotFather`, run `/newbot`, and create one bot for this project.
-2. Edit `~/.config/tmux-telegram-bridge/env` and set
+1. **In Telegram:** Open `@BotFather`, run `/newbot`, and create one bot for
+   this project.
+2. **In your terminal:** Edit `~/.config/tmux-telegram-bridge/env` and set
    `TMUX_TELEGRAM_BOT_TOKEN`.
-3. Start the bridge:
+3. **In your terminal:** Start the bridge:
 
    ```bash
    systemctl --user enable --now tmux-telegram-bridge
    ```
 
-4. Direct-message the bot with `/id`, copy the returned numeric ID into
-   `TMUX_TELEGRAM_ALLOWED_USER_ID`, save the file, and restart the service.
-5. Create a private group containing exactly you and the bot. If Telegram makes
-   you add another person to create it, remove that person before `/setup`.
-6. Enable Topics, then make the bot an administrator with **Manage Topics**.
-7. Send `/setup` in the group's General topic, then send `/status` in Control.
+4. **In Telegram:** Direct-message your new bot with `/id`. **Back in your
+   terminal:** copy the returned numeric ID into
+   `TMUX_TELEGRAM_ALLOWED_USER_ID`, save the file, and restart the service:
+
+   ```bash
+   systemctl --user restart tmux-telegram-bridge
+   ```
+
+5. **In Telegram:** Create a private group containing exactly you and the bot.
+   If Telegram makes you add another person to create it, remove that person
+   before `/setup`.
+6. **In Telegram:** Enable Topics, then make the bot an administrator with
+   **Manage Topics**.
+7. **In Telegram:** Send `/setup` in the group's General topic, then send
+   `/status` in Control.
 
 `General` becomes `Control`, and the bridge creates one topic for every live
 Codex or Claude pane. Text in an agent topic goes only to that pane; a 👍 confirms
@@ -137,6 +158,11 @@ delivery. Completed replies arrive as new messages in the same topic. Privacy
 Mode can stay enabled because the bot is an administrator. If the bot cannot be
 added to the group, use BotFather's `/setjoingroups` to allow it. Unmute the
 group or its agent topics if you want phone notifications.
+
+When Codex or Claude needs one answer from two to six choices, MuxPager posts
+the question as buttons in that agent's existing topic. Tap one button and the
+selection becomes the agent's next user message. This uses the same bot and
+group; no additional BotFather setup is required.
 
 See [docs/telegram.md](docs/telegram.md) for lifecycle behavior, testing, privacy
 checks, notifications, and troubleshooting.
@@ -148,9 +174,12 @@ checks, notifications, and troubleshooting.
 | `prefix + S` | Open the hierarchical session/window/pane switcher |
 | `prefix + o` | Focus or recreate the sidebar |
 | `prefix + N` | Jump to the next agent waiting for attention |
-| `prefix + W` | Snooze the selected target |
-| `prefix + p` | Park or unpark the selected target |
+| `prefix + p` | Park the current session for later |
 | `prefix + C` | Create a named detached background session |
+
+Inside the sidebar, select a session, window, or pane and press `p` to park or
+unpark that exact target. In the popup switcher, use `Ctrl-P`. Sending a new
+prompt to a parked agent also unparks it.
 
 The interface uses these semantics:
 
@@ -159,7 +188,6 @@ The interface uses these semantics:
 | yellow spinner | A live agent is working, including waiting on a subprocess |
 | red `?` | A live agent is asking for input or waiting at its prompt |
 | green `✓` | No live agent is present; the pane is a normal shell or program |
-| `⏸` | The target is snoozed |
 | `P` | The target is parked |
 
 In the Telegram `Control` topic:
@@ -208,15 +236,15 @@ git pull
 ./install.sh
 ```
 
-To remove managed tmux configuration, agent hooks, runtime links, and the
-Telegram service:
+To remove managed tmux configuration, agent hooks, the local agent choice-tool
+registrations, runtime links, and the Telegram service:
 
 ```bash
 ./uninstall.sh
 ```
 
-The uninstaller preserves Telegram credentials and topic state. It also
-preserves all unrelated tmux, Codex, and Claude settings.
+The uninstaller preserves Telegram credentials, topic state, and choice
+history. It also preserves all unrelated tmux, Codex, and Claude settings.
 
 The agent-status core is vendored from `samleeney/tmux-agent-status` with
 `git subtree`. Maintainers can refresh it with:

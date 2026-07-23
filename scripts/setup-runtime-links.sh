@@ -7,7 +7,9 @@ BIN_DIR="$HOME/.local/bin"
 LIBEXEC_DIR="$HOME/.local/libexec/muxpager"
 LEGACY_HOOKS_LINK="$HOME/.local/libexec/tmux-agent-console/hooks"
 BRIDGE_LINK="$BIN_DIR/tmux-telegram-bridge"
+CHOICE_SERVER_LINK="$BIN_DIR/muxpager-choice-server"
 HOOKS_LINK="$LIBEXEC_DIR/hooks"
+QUESTIONS_LINK="$LIBEXEC_DIR/questions"
 
 safe_link() {
     local source_path="$1"
@@ -23,7 +25,9 @@ safe_link() {
 install -d -m 755 "$BIN_DIR"
 install -d -m 755 "$LIBEXEC_DIR"
 safe_link "$PROJECT_ROOT/telegram/bridge.py" "$BRIDGE_LINK"
+safe_link "$PROJECT_ROOT/questions/mcp_server.py" "$CHOICE_SERVER_LINK"
 safe_link "$PROJECT_ROOT/plugins/tmux-agent-status/hooks" "$HOOKS_LINK"
+safe_link "$PROJECT_ROOT/questions" "$QUESTIONS_LINK"
 
 if [ -L "$LEGACY_HOOKS_LINK" ] && \
     [ "$(readlink -f "$LEGACY_HOOKS_LINK")" = \

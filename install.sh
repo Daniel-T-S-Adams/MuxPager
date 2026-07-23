@@ -28,6 +28,7 @@ fi
 python3 "$PROJECT_ROOT/scripts/manage-user-config.py" \
     install --project-root "$PROJECT_ROOT"
 "$PROJECT_ROOT/scripts/setup-runtime-links.sh"
+python3 "$PROJECT_ROOT/scripts/manage-agent-mcp.py" install
 TMUX_AGENT_SYSTEMCTL_BIN="$SYSTEMCTL_BIN" \
     "$PROJECT_ROOT/telegram/setup.sh"
 
@@ -37,7 +38,8 @@ fi
 
 ENV_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-telegram-bridge/env"
 if grep -Eq '^TMUX_TELEGRAM_BOT_TOKEN=[^[:space:]].*$' "$ENV_FILE"; then
-    "$SYSTEMCTL_BIN" --user enable --now tmux-telegram-bridge.service
+    "$SYSTEMCTL_BIN" --user enable tmux-telegram-bridge.service
+    "$SYSTEMCTL_BIN" --user restart tmux-telegram-bridge.service
 else
     echo
     echo "Telegram credentials are not configured yet."
@@ -46,6 +48,7 @@ fi
 echo
 echo "MuxPager installed from: $PROJECT_ROOT"
 echo "Core configuration: ~/.tmux.conf, ~/.codex/hooks.json, ~/.claude/settings.json"
+echo "Choice questions: muxpager MCP registered for each installed agent CLI"
 echo "Telegram configuration: $ENV_FILE"
 echo
 echo "Restart tmux plus any running Codex/Claude processes to give every pane the"

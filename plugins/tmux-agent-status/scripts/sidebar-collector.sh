@@ -41,7 +41,6 @@ _COLLECT_TICK=0
 _LAST_STATUS_MTIME=""
 _COLLECT_CHANGED=0
 SUMMARY_WORKING=0
-SUMMARY_WAITING=0
 SUMMARY_DONE=0
 SUMMARY_TOTAL=0
 SUMMARY_HAS_WORKING=0
@@ -73,12 +72,17 @@ publish_status_summary() {
     local prev_done=""
 
     if [ -f "$STATUS_LINE_COUNTS_FILE" ]; then
-        IFS=: read -r _ _ prev_done _ < "$STATUS_LINE_COUNTS_FILE"
+        local previous_counts=""
+        previous_counts=$(cat "$STATUS_LINE_COUNTS_FILE" 2>/dev/null || echo "")
+        if [[ "$previous_counts" == *:*:*:* ]]; then
+            IFS=: read -r _ _ prev_done _ <<< "$previous_counts"
+        elif [[ "$previous_counts" == *:*:* ]]; then
+            IFS=: read -r _ prev_done _ <<< "$previous_counts"
+        fi
     fi
 
     write_status_summary_cache \
         "$SUMMARY_WORKING" \
-        "$SUMMARY_WAITING" \
         "$SUMMARY_DONE" \
         "$SUMMARY_TOTAL"
 

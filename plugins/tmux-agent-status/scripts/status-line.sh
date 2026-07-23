@@ -74,8 +74,6 @@ check_agent_processes() {
     while IFS= read -r session; do
         [ -z "$session" ] && continue
         local status_file="$STATUS_DIR/${session}.status"
-        local wait_file="$STATUS_DIR/wait/${session}.wait"
-        local parked_file="$PARKED_DIR/${session}.parked"
         local current_status=""
         local codex_pid=""
 
@@ -97,27 +95,17 @@ check_agent_processes() {
                 # No status file yet — headless session or first detection
                 echo "working" > "$status_file"
             elif codex_session_is_working "$codex_pid"; then
-                case "$current_status" in
-                    "done")
-                        echo "working" > "$status_file"
-                        ;;
-                    "wait")
-                        rm -f "$wait_file"
-                        echo "working" > "$status_file"
-                        ;;
-                esac
+                [ "$current_status" = "done" ] && echo "working" > "$status_file"
             fi
         fi
     done < <(tmux list-sessions -F "#{session_name}" 2>/dev/null)
 }
 
-expire_wait_timers >/dev/null
 check_agent_processes
 
 # Count agent sessions by status
 count_agent_status() {
     local working=0
-    local waiting=0
     local done=0
     local total_agents=0
 
@@ -138,63 +126,63 @@ count_agent_status() {
             # SSH session with remote status
             local status=$(cat "$remote_status_file" 2>/dev/null)
             if [ -n "$status" ]; then
+                [ "$status" = "wait" ] && status="done"
                 case "$status" in
                     "working") ((working++)); ((total_agents++)) ;;
-                    "done") ((done++)); ((total_agents++)) ;;
-                    "wait") ((waiting++)); ((total_agents++)) ;;
+                    "done"|"ask") ((done++)); ((total_agents++)) ;;
                 esac
             fi
         elif [ -f "$remote_status_file" ] && ! is_ssh_session "$session"; then
             # A remote cache for a non-SSH session is stale and should not override
             # the local session status.
             rm -f "$remote_status_file" 2>/dev/null
-            normalize_local_wait_status "$session"
             if [ -f "$status_file" ]; then
                 local status=$(cat "$status_file" 2>/dev/null)
                 if [ -n "$status" ]; then
+                    [ "$status" = "wait" ] && status="done"
                     case "$status" in
                         "working") ((working++)); ((total_agents++)) ;;
-                        "done") ((done++)); ((total_agents++)) ;;
-                        "wait") ((waiting++)); ((total_agents++)) ;;
+                        "done"|"ask") ((done++)); ((total_agents++)) ;;
                     esac
                 fi
             fi
         elif [ -f "$status_file" ]; then
             # Local session status
-            normalize_local_wait_status "$session"
             local status=$(cat "$status_file" 2>/dev/null)
             if [ -n "$status" ]; then
+                [ "$status" = "wait" ] && status="done"
                 case "$status" in
                     "working") ((working++)); ((total_agents++)) ;;
-                    "done") ((done++)); ((total_agents++)) ;;
-                    "wait") ((waiting++)); ((total_agents++)) ;;
+                    "done"|"ask") ((done++)); ((total_agents++)) ;;
                 esac
             fi
         fi
     done < <(tmux list-sessions -F "#{session_name}" 2>/dev/null)
 
-    echo "$working:$waiting:$done:$total_agents"
+    echo "$working:$done:$total_agents"
 }
 
 # Get current status
-IFS=':' read -r working waiting done total_agents <<< "$(count_agent_status)"
+IFS=':' read -r working done total_agents <<< "$(count_agent_status)"
 
 # Load previous status. Older versions stored only the working count; skip
 # notification diffing until we've written the new multi-count format once.
 prev_done=""
 if [ -f "$LAST_STATUS_FILE" ]; then
     prev_status=$(cat "$LAST_STATUS_FILE" 2>/dev/null || echo "")
-    if [[ "$prev_status" == *:* ]]; then
+    if [[ "$prev_status" == *:*:*:* ]]; then
         IFS=':' read -r _ _ prev_done _ <<< "$prev_status"
+    elif [[ "$prev_status" == *:*:* ]]; then
+        IFS=':' read -r _ prev_done _ <<< "$prev_status"
     fi
 fi
 
 # Save current status counts
-echo "$working:$waiting:$done:$total_agents" > "$LAST_STATUS_FILE"
+echo "$working:$done:$total_agents" > "$LAST_STATUS_FILE"
 
 # Check if any agent just finished (done count increased)
 if [ -n "$prev_done" ] && [ "$done" -gt "$prev_done" ]; then
     "$SCRIPT_DIR/play-sound.sh" &
 fi
 
-render_status_summary "$working" "$waiting" "$done" "$total_agents"
+render_status_summary "$working" "$done" "$total_agents"

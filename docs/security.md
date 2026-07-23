@@ -32,10 +32,24 @@ or Telegram usernames as identity.
   evaluated by a shell belonging to the bridge.
 - If the agent exits to Bash, the live-agent lookup fails and delivery is
   refused.
+- Choice-button callback data contains only a random request ID and option
+  number. Before accepting it, the bridge verifies the configured user, group,
+  topic, Telegram message, durable request, and allowed option. The first valid
+  answer wins.
+- Choice questions and selections are stored in mode-`0600` files. A selected
+  answer uses the same literal tmux-buffer delivery path as an ordinary
+  Telegram message.
 
 An agent may itself choose to execute a command after reading a Telegram
 message. Telegram therefore has the same authority as typing a prompt directly
 into that agent; it does not bypass the agent's own approval or sandbox policy.
+
+The installer allows Claude to call only the exact
+`mcp__muxpager__ask_choice` tool without another terminal approval prompt. That
+tool can write a bounded local question record; it cannot run commands or send
+input to tmux. Codex uses the tool's non-destructive MCP annotation and normal
+tool policy. Actual input delivery remains exclusively in the authenticated
+Telegram bridge.
 
 ## Secret storage
 

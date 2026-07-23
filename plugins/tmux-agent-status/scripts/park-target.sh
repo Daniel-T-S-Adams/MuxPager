@@ -88,7 +88,6 @@ toggle_park() {
                     [ "$(cat "$pane_file" 2>/dev/null || echo "")" = "parked" ] && echo "done" > "$pane_file"
                 done
             else
-                rm -f "$WAIT_DIR/${session}.wait"
                 : > "$PARKED_DIR/${session}.parked"
                 write_session_state "$session" "parked"
 
@@ -97,7 +96,6 @@ toggle_park() {
                     [ -n "$pane_id" ] || continue
                     : > "$PARKED_DIR/${session}_${pane_id}.parked"
                     echo "parked" > "$PANE_DIR/${session}_${pane_id}.status"
-                    rm -f "$WAIT_DIR/${session}_${pane_id}.wait" 2>/dev/null
                 done < <(tmux list-panes -t "$session" -F '#{pane_id}' 2>/dev/null)
             fi
             ;;
@@ -118,7 +116,6 @@ toggle_park() {
                     [ -n "$pane_id" ] || continue
                     : > "$PARKED_DIR/${session}_${pane_id}.parked"
                     echo "parked" > "$PANE_DIR/${session}_${pane_id}.status"
-                    rm -f "$WAIT_DIR/${session}_${pane_id}.wait" 2>/dev/null
                 done < <(tmux list-panes -t "${session}:${win_idx}" -F '#{pane_id}' 2>/dev/null)
             fi
             sync_session_after_child_scope_change "$session"
@@ -130,7 +127,6 @@ toggle_park() {
                     echo "done" > "$PANE_DIR/${session}_${token}.status"
                 fi
             else
-                rm -f "$WAIT_DIR/${session}_${token}.wait" 2>/dev/null
                 : > "$PARKED_DIR/${session}_${token}.parked"
                 echo "parked" > "$PANE_DIR/${session}_${token}.status"
             fi

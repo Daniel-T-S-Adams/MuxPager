@@ -72,6 +72,26 @@ When the agent completes a turn, its exact final message is posted as a fresh
 topic message. Ensure the group or individual topic is not muted if you want a
 push notification.
 
+When Codex or Claude asks one question with two to six possible answers, the
+agent ends its turn and the bridge posts an inline button for each option in the
+same topic. Tap one button. MuxPager records the first valid tap and delivers
+the selected label to that exact agent as its next user message. Use **Cancel**
+when none of the choices should be assumed.
+
+Only one choice question can be active per agent topic. While its buttons are
+active, ordinary Telegram text is rejected so it cannot race the selection. If
+you answer directly in tmux instead, the buttons are removed and marked as
+answered locally. A saved button selection waits when the agent is still
+working—for example on a long subprocess—and is delivered only when the current
+turn is idle. Pending questions survive a bridge restart and do not time out;
+they expire only if that exact agent pane exits or a newer question replaces
+them.
+
+The installer registers the local `muxpager` question tool with both installed
+agent CLIs. Existing Codex and Claude processes must be restarted once after
+installation so they can discover it. The feature uses your existing Telegram
+bot, private group, and topics; there is no extra BotFather step.
+
 The Control topic provides:
 
 - `/sync` — reconcile all live agent topics now.
@@ -125,6 +145,18 @@ Run sleep 20 in the terminal, then reply exactly: LONG JOB COMPLETE
 
 The topic should remain open and `/status` should show the agent working until
 the final reply arrives.
+
+To test choices, ask either agent:
+
+```text
+Ask me which test target to use: Unit tests or Full suite. Use the MuxPager
+single-choice question tool.
+```
+
+Expect two Telegram buttons in that agent's topic. Tap one and confirm that the
+agent resumes with that selection. Then repeat and type an answer directly in
+tmux; the Telegram buttons should become inactive and say the question was
+answered locally.
 
 ## Diagnostics
 

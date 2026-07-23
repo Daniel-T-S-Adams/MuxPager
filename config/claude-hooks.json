@@ -1,4 +1,9 @@
 {
+  "permissions": {
+    "allow": [
+      "mcp__muxpager__ask_choice"
+    ]
+  },
   "hooks": {
     "Notification": [
       {
@@ -26,6 +31,15 @@
           {
             "type": "command",
             "command": "bash \"$HOME/.local/libexec/muxpager/hooks/better-hook.sh\" PreToolUse"
+          }
+        ]
+      },
+      {
+        "matcher": "^AskUserQuestion$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.local/libexec/muxpager/hooks/choice-redirect.sh\""
           }
         ]
       }

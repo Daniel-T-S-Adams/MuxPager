@@ -30,6 +30,15 @@
             "command": "bash \"$HOME/.local/libexec/muxpager/hooks/codex-hook.sh\" PreToolUse"
           }
         ]
+      },
+      {
+        "matcher": "^(request_user_input|functions\\.request_user_input)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.local/libexec/muxpager/hooks/choice-redirect.sh\""
+          }
+        ]
       }
     ],
     "Stop": [

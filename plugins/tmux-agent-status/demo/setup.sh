@@ -10,7 +10,7 @@ STATUS_DIR="$HOME/.cache/tmux-agent-status"
 DEMO_DIR=$(mktemp -d)
 echo "$DEMO_DIR" > /tmp/demo-agent-status-dir
 
-mkdir -p "$STATUS_DIR/parked" "$STATUS_DIR/wait" "$STATUS_DIR/panes"
+mkdir -p "$STATUS_DIR/parked" "$STATUS_DIR/panes"
 
 # ── Fake claude binary (so pgrep detects multi-agent panes) ──
 mkdir -p "$DEMO_DIR/bin"
@@ -74,7 +74,7 @@ tmux new-session -d -s demo-docs
 tmux send-keys -t demo-docs "echo 'README.md updated'" Enter
 sleep 0.1
 
-# CI — wait
+# CI — parked
 tmux new-session -d -s demo-ci
 tmux send-keys -t demo-ci "echo 'CI pipeline queued...'" Enter
 sleep 0.1
@@ -88,8 +88,8 @@ echo "done"    > "$STATUS_DIR/demo-ml.status"
 echo "done"    > "$STATUS_DIR/demo-data.status"
 touch "$STATUS_DIR/demo-data.unread"
 echo "done"    > "$STATUS_DIR/demo-docs.status"
-echo "wait"    > "$STATUS_DIR/demo-ci.status"
-echo "$(( $(date +%s) + 1800 ))" > "$STATUS_DIR/wait/demo-ci.wait"
+echo "parked" > "$STATUS_DIR/demo-ci.status"
+touch "$STATUS_DIR/parked/demo-ci.parked"
 
 # ── Reload plugin ──
 tmux source-file "$PLUGIN_DIR/tmux-agent-status.tmux" 2>/dev/null || true
@@ -112,7 +112,7 @@ echo "Demo sessions created! States:"
 echo "  UNREAD:  demo-data"
 echo "  DONE:    demo-ml, demo-docs, demo-wt-cache"
 echo "  WORKING: demo-api (2 panes), demo-wt-auth, demo-frontend"
-echo "  WAIT:    demo-ci (30m)"
+echo "  PARKED:  demo-ci"
 echo ""
 echo "Worktree tree: demo-api → demo-wt-auth, demo-wt-cache"
 echo ""
