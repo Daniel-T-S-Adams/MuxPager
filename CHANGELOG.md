@@ -12,6 +12,8 @@ All notable changes to MuxPager are documented here. The project uses
   exact agent pane.
 - A shared local MCP question tool, automatic Codex/Claude registration,
   restart-safe choice storage, and direct-tmux-answer cancellation.
+- A release-readiness fault register covering Telegram choice edge cases,
+  stale agent states, approval prompts, long jobs, and broader hardening work.
 
 ### Changed
 

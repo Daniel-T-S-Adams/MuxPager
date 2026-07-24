@@ -266,6 +266,8 @@ The suite covers the Telegram bridge, relocated installations, safe
 install/uninstall behavior, and the vendored plugin's shell regressions.
 
 For common failures, see [docs/troubleshooting.md](docs/troubleshooting.md).
+For pre-release fault modes and hardening work, see
+[docs/release-readiness.md](docs/release-readiness.md).
 
 The project is released under the [MIT License](LICENSE). The vendored
 agent-status core retains upstream attribution in
