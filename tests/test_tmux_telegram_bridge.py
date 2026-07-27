@@ -31,6 +31,13 @@ class TelegramBridgeTests(unittest.TestCase):
         self.assertEqual("tr › codex › codex #1", panes[0].label)
         self.assertEqual("tr · codex #1", panes[0].topic_name)
 
+    def test_topic_name_ignores_tmux_copy_mode_window_name(self) -> None:
+        pane = bridge.AgentPane(
+            "%2", "tr", "0", "[tmux]", "1", "codex", "working"
+        )
+
+        self.assertEqual("tr · codex #1", pane.topic_name)
+
     def test_clean_capture_removes_prompt_and_footer(self) -> None:
         captured = "Old line\n\n• Final answer\n─ Worked for 2m ─\n\n› Run /review\n\ngpt-5.6-sol"
         self.assertEqual("Old line\n\n• Final answer", bridge.clean_capture(captured))

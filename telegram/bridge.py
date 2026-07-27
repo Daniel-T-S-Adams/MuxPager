@@ -67,7 +67,11 @@ class AgentPane:
     def topic_name(self) -> str:
         parts = [self.session]
         window = self.window_name.strip()
-        if window and window.casefold() != self.agent.casefold():
+        # tmux's default automatic-rename format temporarily calls a window
+        # "[tmux]" while its active pane is in copy mode. That is terminal UI
+        # state, not a meaningful window rename, so do not propagate it to the
+        # persistent Telegram topic title.
+        if window and window.casefold() not in {self.agent.casefold(), "[tmux]"}:
             parts.append(window)
         parts.append(f"{self.agent} #{self.pane_index}")
         return trim_label(" · ".join(parts), 128)
