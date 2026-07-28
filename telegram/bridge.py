@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -27,6 +28,7 @@ from questions.store import ACTIVE_STATES, ChoiceStore  # noqa: E402
 
 LOG = logging.getLogger("tmux-telegram-bridge")
 TELEGRAM_TEXT_LIMIT = 4096
+LOCAL_PROMPT_CHUNK_LIMIT = 3900
 MAX_INPUT_LENGTH = 4096
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 
@@ -48,6 +50,7 @@ class AgentPane:
     pane_index: str
     agent: str
     status: str
+    conversation_id: str = ""
 
     @property
     def label(self) -> str:
@@ -56,12 +59,24 @@ class AgentPane:
 
     @property
     def topic_key(self) -> str:
-        # Pane IDs are reused when a tmux server restarts. Session/window/pane
-        # position plus agent type is stable enough to reopen the existing
-        # Telegram topic while still separating two agents in one window.
+        if self.conversation_id:
+            return "\x1f".join(("conversation", self.agent, self.conversation_id))
+        return self.legacy_topic_key
+
+    @property
+    def legacy_topic_key(self) -> str:
+        # Retained only for upgrading mappings created before hooks exposed the
+        # real Codex/Claude conversation ID.
         return "\x1f".join(
             (self.session, self.window_index, self.pane_index, self.agent)
         )
+
+    @property
+    def identity_ready(self) -> bool:
+        # Devin does not currently expose a supported session hook, so preserve
+        # its existing position-based behavior. Codex and Claude must never be
+        # routed by pane position once this bridge understands conversations.
+        return bool(self.conversation_id) or self.agent not in {"codex", "claude"}
 
     @property
     def topic_name(self) -> str:
@@ -73,17 +88,27 @@ class AgentPane:
         # persistent Telegram topic title.
         if window and window.casefold() not in {self.agent.casefold(), "[tmux]"}:
             parts.append(window)
-        parts.append(f"{self.agent} #{self.pane_index}")
+        if self.conversation_id:
+            parts.append(f"{self.agent} · {self.conversation_id[:8]}")
+        else:
+            parts.append(f"{self.agent} #{self.pane_index}")
         return trim_label(" · ".join(parts), 128)
+
+
+@dataclass(frozen=True)
+class CachedPrompt:
+    path: Path
+    text: str
 
 
 def parse_agent_rows(output: str) -> list[AgentPane]:
     panes: list[AgentPane] = []
     for line in output.splitlines():
         fields = line.split("\t")
-        if len(fields) != 7 or not fields[0].startswith("%"):
+        if len(fields) not in {7, 8} or not fields[0].startswith("%"):
             continue
-        pane_id, session, window_index, window_name, pane_index, agent, status = fields
+        pane_id, session, window_index, window_name, pane_index, agent, status = fields[:7]
+        conversation_id = fields[7] if len(fields) == 8 else ""
         if agent not in {"claude", "codex", "devin"}:
             continue
         if status not in {"working", "done", "ask", "parked"}:
@@ -97,6 +122,7 @@ def parse_agent_rows(output: str) -> list[AgentPane]:
                 pane_index=pane_index,
                 agent=agent,
                 status=status,
+                conversation_id=conversation_id,
             )
         )
     return panes
@@ -137,6 +163,25 @@ def trim_label(text: str, limit: int) -> str:
     if limit < 2:
         return text[:limit]
     return text[: limit - 1] + "…"
+
+
+def split_utf16(text: str, limit: int) -> list[str]:
+    """Split text without loss while respecting Telegram's UTF-16 limits."""
+    if limit < 1:
+        raise ValueError("limit must be positive")
+    chunks: list[str] = []
+    start = 0
+    units = 0
+    for index, character in enumerate(text):
+        character_units = len(character.encode("utf-16-le")) // 2
+        if units and units + character_units > limit:
+            chunks.append(text[start:index])
+            start = index
+            units = 0
+        units += character_units
+    if start < len(text):
+        chunks.append(text[start:])
+    return chunks
 
 
 def clean_capture(output: str) -> str:
@@ -189,7 +234,27 @@ class TmuxClient:
         return parse_agent_rows(result.stdout)
 
     def _message_path(self, pane: AgentPane) -> Path:
+        if pane.conversation_id:
+            cache_id = hashlib.sha256(
+                f"{pane.agent}\0{pane.conversation_id}".encode("utf-8")
+            ).hexdigest()
+            return self.message_dir / "conversations" / f"{cache_id}.last-message"
         return self.message_dir / f"{pane.session}_{pane.pane_id}.last-message"
+
+    def _prompt_dirs(self, pane: AgentPane) -> list[Path]:
+        legacy = self.message_dir / f"{pane.session}_{pane.pane_id}.prompts"
+        if not pane.conversation_id:
+            return [legacy]
+        cache_id = hashlib.sha256(
+            f"{pane.agent}\0{pane.conversation_id}".encode("utf-8")
+        ).hexdigest()
+        return [
+            self.message_dir / "conversations" / f"{cache_id}.prompts",
+            legacy,
+        ]
+
+    def _telegram_prompt_marker_path(self, pane: AgentPane) -> Path:
+        return self.message_dir / f"{pane.session}_{pane.pane_id}.telegram-prompt"
 
     def message_version(self, pane: AgentPane) -> str:
         try:
@@ -197,6 +262,72 @@ class TmuxClient:
         except OSError:
             return ""
         return f"{stat.st_mtime_ns}:{stat.st_size}"
+
+    def pending_local_prompts(self, pane: AgentPane) -> list[CachedPrompt]:
+        prompts: list[CachedPrompt] = []
+        for directory in self._prompt_dirs(pane):
+            try:
+                paths = sorted(directory.glob("*.prompt"))
+            except OSError:
+                continue
+            for path in paths:
+                if path.is_symlink():
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                if text.strip():
+                    prompts.append(CachedPrompt(path, text))
+        return prompts
+
+    def acknowledge_local_prompt(self, prompt: CachedPrompt) -> None:
+        try:
+            prompt.path.unlink()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise TmuxError("Could not acknowledge a mirrored local prompt") from exc
+        try:
+            prompt.path.parent.rmdir()
+        except OSError:
+            pass
+
+    def _write_telegram_prompt_marker(
+        self, pane: AgentPane, message: str
+    ) -> Path:
+        self.message_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        target = self._telegram_prompt_marker_path(pane)
+        temporary_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                delete=False,
+                dir=self.message_dir,
+                prefix=".telegram-prompt-",
+            ) as handle:
+                json.dump(
+                    {
+                        "prompt_sha256": hashlib.sha256(
+                            message.encode("utf-8")
+                        ).hexdigest(),
+                        "created_at": time.time(),
+                    },
+                    handle,
+                    separators=(",", ":"),
+                )
+                temporary_path = handle.name
+            os.chmod(temporary_path, 0o600)
+            os.replace(temporary_path, target)
+        except OSError as exc:
+            if temporary_path:
+                try:
+                    os.unlink(temporary_path)
+                except FileNotFoundError:
+                    pass
+            raise TmuxError("Could not mark a Telegram-originated prompt") from exc
+        return target
 
     def capture(self, pane_id: str) -> str:
         try:
@@ -234,7 +365,7 @@ class TmuxClient:
             return captured, "Latest pane output"
         return "No visible output yet.", "Latest pane output"
 
-    def _validate_target(self, pane_id: str) -> None:
+    def _validate_target(self, pane: AgentPane) -> None:
         try:
             result = subprocess.run(
                 [
@@ -242,7 +373,7 @@ class TmuxClient:
                     "display-message",
                     "-p",
                     "-t",
-                    pane_id,
+                    pane.pane_id,
                     "#{pane_dead}\t#{pane_id}",
                 ],
                 check=True,
@@ -251,19 +382,33 @@ class TmuxClient:
                 timeout=5,
             )
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            raise TmuxError(f"Pane {pane_id} is no longer available") from exc
-        if result.stdout.strip() != f"0\t{pane_id}":
-            raise TmuxError(f"Pane {pane_id} is no longer a live target")
+            raise TmuxError(f"Pane {pane.pane_id} is no longer available") from exc
+        if result.stdout.strip() != f"0\t{pane.pane_id}":
+            raise TmuxError(f"Pane {pane.pane_id} is no longer a live target")
 
-    def send_message(self, pane_id: str, message: str) -> None:
+        # Pane IDs and positions can be reused. Resolve the process tree again
+        # immediately before paste and require one exact conversation match.
+        matches = [
+            candidate
+            for candidate in self.agents()
+            if candidate.identity_ready and candidate.topic_key == pane.topic_key
+        ]
+        if len(matches) != 1 or matches[0].pane_id != pane.pane_id:
+            raise TmuxError(
+                "The target conversation moved or became ambiguous before delivery"
+            )
+
+    def send_message(self, pane: AgentPane, message: str) -> None:
         if not message.strip():
             raise TmuxError("Refusing to send an empty message")
         if len(message) > MAX_INPUT_LENGTH:
             raise TmuxError(f"Message is longer than {MAX_INPUT_LENGTH} characters")
-        self._validate_target(pane_id)
+        self._validate_target(pane)
+        marker_path = self._write_telegram_prompt_marker(pane, message)
 
         buffer_name = f"telegram-{os.getpid()}-{time.time_ns()}"
         temporary_path = ""
+        delivered = False
         try:
             with tempfile.NamedTemporaryFile(
                 mode="w", encoding="utf-8", delete=False, prefix="tmux-telegram-"
@@ -287,18 +432,19 @@ class TmuxClient:
                     "-b",
                     buffer_name,
                     "-t",
-                    pane_id,
+                    pane.pane_id,
                 ],
                 check=True,
                 capture_output=True,
                 timeout=5,
             )
             subprocess.run(
-                [self.tmux_bin, "send-keys", "-t", pane_id, "Enter"],
+                [self.tmux_bin, "send-keys", "-t", pane.pane_id, "Enter"],
                 check=True,
                 capture_output=True,
                 timeout=5,
             )
+            delivered = True
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             try:
                 subprocess.run(
@@ -309,8 +455,15 @@ class TmuxClient:
                 )
             except (OSError, subprocess.TimeoutExpired):
                 pass
-            raise TmuxError(f"Could not send the message to pane {pane_id}") from exc
+            raise TmuxError(
+                f"Could not send the message to pane {pane.pane_id}"
+            ) from exc
         finally:
+            if not delivered:
+                try:
+                    marker_path.unlink()
+                except FileNotFoundError:
+                    pass
             if temporary_path:
                 try:
                     os.unlink(temporary_path)
@@ -543,8 +696,8 @@ class Bridge:
         self._reply(
             message,
             "✓ Private tmux agent group connected.\n\n"
-            "Creating one topic per live agent pane. Use /sync here whenever "
-            "you want to force an immediate reconciliation.",
+            "Creating one topic per live agent conversation. Use /sync here "
+            "whenever you want to force an immediate reconciliation.",
         )
         self._sync_topics()
 
@@ -580,6 +733,33 @@ class Bridge:
             raise TelegramError("No private topic group is configured")
         topics = self._topics()
         record = topics.get(pane.topic_key)
+
+        # One-time migration from the old pane-position key. Only an open topic
+        # can represent the currently live conversation; a closed positional
+        # topic is historical and must not be attached to a new session merely
+        # because tmux reused its slot.
+        if (
+            not isinstance(record, dict)
+            and pane.conversation_id
+            and pane.legacy_topic_key != pane.topic_key
+        ):
+            legacy_record = topics.get(pane.legacy_topic_key)
+            if (
+                isinstance(legacy_record, dict)
+                and isinstance(legacy_record.get("thread_id"), int)
+                and not legacy_record.get("closed")
+            ):
+                record = topics.pop(pane.legacy_topic_key)
+                topics[pane.topic_key] = record
+                for state_key in ("agent_status", "message_versions"):
+                    values = self.state.get(state_key)
+                    if isinstance(values, dict) and pane.legacy_topic_key in values:
+                        values[pane.topic_key] = values.pop(pane.legacy_topic_key)
+                LOG.info(
+                    "Migrated Telegram topic %s to conversation identity",
+                    record["thread_id"],
+                )
+                self._save_state()
 
         if isinstance(record, dict) and isinstance(record.get("thread_id"), int):
             thread_id = int(record["thread_id"])
@@ -623,6 +803,7 @@ class Bridge:
                 "pane_id": pane.pane_id,
                 "label": pane.label,
                 "closed": False,
+                "conversation_id": pane.conversation_id,
             }
             topics[pane.topic_key] = record
             self._save_state()
@@ -652,6 +833,7 @@ class Bridge:
 
         record["pane_id"] = pane.pane_id
         record["label"] = pane.label
+        record["conversation_id"] = pane.conversation_id
         record["closed"] = False
         record.pop("missing_since", None)
         self._save_state()
@@ -729,8 +911,8 @@ class Bridge:
             try:
                 self._send_message(
                     chat_id,
-                    "Agent process exited. Closing this topic; it will reopen "
-                    "automatically if the same agent returns.",
+                    "Conversation is no longer active. Closing this topic; it will reopen "
+                    "automatically if the same conversation returns.",
                     thread_id,
                     disable_notification=True,
                 )
@@ -928,7 +1110,7 @@ class Bridge:
             )
 
         try:
-            self.tmux.send_message(pane.pane_id, prompt)
+            self.tmux.send_message(pane, prompt)
         except TmuxError:
             self.choice_store.update(
                 str(delivering["id"]),
@@ -992,17 +1174,69 @@ class Bridge:
         self._edit_choice_message(choice, footer, finalized=True)
 
     def _sync_choices(self, panes: list[AgentPane]) -> None:
-        pane_by_key = {pane.topic_key: pane for pane in panes}
+        ready_panes = [pane for pane in panes if pane.identity_ready]
+        identity_pending_keys = {
+            pane.legacy_topic_key for pane in panes if not pane.identity_ready
+        }
+        key_counts: dict[str, int] = {}
+        for pane in ready_panes:
+            key_counts[pane.topic_key] = key_counts.get(pane.topic_key, 0) + 1
+        ambiguous_keys = {
+            key for key, count in key_counts.items() if count > 1
+        }
+        routable_panes = [
+            pane for pane in ready_panes if pane.topic_key not in ambiguous_keys
+        ]
+        pane_by_key = {pane.topic_key: pane for pane in routable_panes}
         now = time.time()
         for choice in self.choice_store.all():
             state = choice.get("state")
             if state not in ACTIVE_STATES:
                 self._finalize_choice_message(choice)
                 continue
-            pane = pane_by_key.get(str(choice.get("topic_key") or ""))
-            if pane is None or pane.pane_id != choice.get("pane_id"):
+            choice_key = str(choice.get("topic_key") or "")
+            if choice_key in identity_pending_keys:
+                continue
+            if choice_key in ambiguous_keys:
+                continue
+            pane = pane_by_key.get(choice_key)
+            if pane is None:
+                # Upgrade an active position-keyed request created before
+                # conversation identities were available.
+                legacy_matches = [
+                    candidate
+                    for candidate in routable_panes
+                    if candidate.legacy_topic_key == choice_key
+                ]
+                if len(legacy_matches) == 1:
+                    pane = legacy_matches[0]
+
+            if pane is None:
                 self._expire_choice(choice)
                 continue
+
+            if (
+                choice_key != pane.topic_key
+                or pane.pane_id != choice.get("pane_id")
+                or pane.session != choice.get("session")
+                or pane.window_index != choice.get("window_index")
+                or pane.pane_index != choice.get("pane_index")
+            ):
+                updated = self.choice_store.update(
+                    str(choice["id"]),
+                    lambda current: {
+                        **current,
+                        "pane_id": pane.pane_id,
+                        "session": pane.session,
+                        "window_index": pane.window_index,
+                        "pane_index": pane.pane_index,
+                        "conversation_id": pane.conversation_id,
+                        "topic_key": pane.topic_key,
+                    },
+                )
+                if updated is None:
+                    continue
+                choice = updated
             if state == "pending":
                 try:
                     self._publish_choice(choice, pane)
@@ -1079,6 +1313,35 @@ class Bridge:
         text = heading + "\n\n" + trim_middle(output, max(200, available))
         self._send_to_agent_topic(pane, text)
 
+    def _post_local_prompt(self, pane: AgentPane, prompt: str) -> None:
+        chunks = split_utf16(prompt, LOCAL_PROMPT_CHUNK_LIMIT)
+        total = len(chunks)
+        for index, chunk in enumerate(chunks, start=1):
+            heading = "💻 You (tmux):"
+            if total > 1:
+                heading = f"💻 You (tmux) [{index}/{total}]:"
+            self._send_to_agent_topic(
+                pane,
+                heading + "\n\n" + chunk,
+                disable_notification=True,
+            )
+
+    def _sync_local_prompts(self, panes: list[AgentPane]) -> None:
+        for pane in panes:
+            for prompt in self.tmux.pending_local_prompts(pane):
+                try:
+                    self._post_local_prompt(pane, prompt.text)
+                except TelegramError as exc:
+                    LOG.warning(
+                        "Could not mirror local prompt for %s: %s", pane.label, exc
+                    )
+                    break
+                try:
+                    self.tmux.acknowledge_local_prompt(prompt)
+                except TmuxError as exc:
+                    LOG.warning("%s", exc)
+                    break
+
     def _sync_topics(self) -> int:
         if self._group_chat_id() is None:
             return 0
@@ -1088,8 +1351,21 @@ class Bridge:
             LOG.warning("Agent topic refresh failed: %s", exc)
             return 0
 
-        live_keys = {pane.topic_key for pane in panes}
-        for pane in panes:
+        ready_panes = [pane for pane in panes if pane.identity_ready]
+        key_counts: dict[str, int] = {}
+        for pane in ready_panes:
+            key_counts[pane.topic_key] = key_counts.get(pane.topic_key, 0) + 1
+        routable_panes = [
+            pane for pane in ready_panes if key_counts[pane.topic_key] == 1
+        ]
+
+        # Keep a pre-upgrade positional topic open while an already-running
+        # Codex/Claude process waits for its next hook to backfill session_id.
+        live_keys = {pane.topic_key for pane in ready_panes}
+        live_keys.update(
+            pane.legacy_topic_key for pane in panes if not pane.identity_ready
+        )
+        for pane in routable_panes:
             try:
                 self._ensure_topic(pane)
             except TelegramError as exc:
@@ -1097,10 +1373,11 @@ class Bridge:
 
         self._close_missing_topics(live_keys, time.time())
         self._sync_choices(panes)
+        self._sync_local_prompts(routable_panes)
 
-        current_status = {pane.topic_key: pane.status for pane in panes}
+        current_status = {pane.topic_key: pane.status for pane in routable_panes}
         current_versions = {
-            pane.topic_key: self.tmux.message_version(pane) for pane in panes
+            pane.topic_key: self.tmux.message_version(pane) for pane in routable_panes
         }
         previous_status = self.state.get("agent_status", {})
         previous_versions = self.state.get("message_versions", {})
@@ -1108,7 +1385,7 @@ class Bridge:
 
         completed: list[AgentPane] = []
         if initialized:
-            for pane in panes:
+            for pane in routable_panes:
                 newly_completed = (
                     previous_status.get(pane.topic_key) == "working"
                     and pane.status in {"done", "ask"}
@@ -1134,19 +1411,28 @@ class Bridge:
                     self._post_completion(pane)
                 except (TelegramError, TmuxError) as exc:
                     LOG.warning("Could not publish agent reply: %s", exc)
-        return len(panes)
+        return len(routable_panes)
 
     def _status_report(self) -> str:
         panes = self.tmux.agents()
         if not panes:
             return "No live Codex or Claude panes."
         lines = []
+        key_counts: dict[str, int] = {}
         for pane in panes:
-            state = (
-                "waiting for your button choice"
-                if self.choice_store.active_for_topic(pane.topic_key)
-                else status_text(pane.status)
-            )
+            if pane.identity_ready:
+                key_counts[pane.topic_key] = key_counts.get(pane.topic_key, 0) + 1
+        for pane in panes:
+            if not pane.identity_ready:
+                state = "waiting for conversation identity; Telegram routing paused"
+            elif key_counts.get(pane.topic_key, 0) > 1:
+                state = "open in multiple panes; Telegram routing paused"
+            else:
+                state = (
+                    "waiting for your button choice"
+                    if self.choice_store.active_for_topic(pane.topic_key)
+                    else status_text(pane.status)
+                )
             lines.append(f"{status_icon(pane.status)} {pane.topic_name} — {state}")
         return "\n".join(lines)
 
@@ -1334,17 +1620,38 @@ class Bridge:
         if not outgoing.strip():
             self._reply(message, "There was no text to send.")
             return
-        pane = next(
-            (candidate for candidate in self.tmux.agents() if candidate.topic_key == key),
-            None,
-        )
-        if pane is None:
+        panes = self.tmux.agents()
+        matching_panes = [
+            candidate
+            for candidate in panes
+            if candidate.identity_ready and candidate.topic_key == key
+        ]
+        if len(matching_panes) > 1:
             self._reply(
                 message,
-                "That agent is no longer running. This topic will close "
+                "This conversation is open in multiple tmux panes, so delivery "
+                "is paused to avoid sending your message to the wrong process.",
+            )
+            return
+        if not matching_panes:
+            identity_pending = any(
+                not candidate.identity_ready and candidate.legacy_topic_key == key
+                for candidate in panes
+            )
+            if identity_pending:
+                self._reply(
+                    message,
+                    "That agent has not reported its conversation identity yet. "
+                    "Telegram delivery is paused until its next Codex/Claude event.",
+                )
+                return
+            self._reply(
+                message,
+                "That conversation is no longer running. This topic will close "
                 "automatically unless it returns.",
             )
             return
+        pane = matching_panes[0]
         active_choice = self.choice_store.active_for_topic(key)
         if active_choice is not None:
             self._reply(
@@ -1353,7 +1660,7 @@ class Bridge:
                 "offered answers or Cancel before sending another message.",
             )
             return
-        self.tmux.send_message(pane.pane_id, outgoing)
+        self.tmux.send_message(pane, outgoing)
         self._acknowledge(message)
 
     def run(self) -> None:

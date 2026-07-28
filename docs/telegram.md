@@ -1,7 +1,7 @@
 # Telegram topics
 
-The Telegram interface mirrors the agents visible in tmux. One bot manages one
-private forum group; each live Codex or Claude pane has its own topic.
+The Telegram interface mirrors actual agent conversations. One bot manages one
+private forum group; each live Codex or Claude conversation has its own topic.
 
 ## Setup
 
@@ -63,10 +63,19 @@ This is unnecessary when your user session remains logged in.
 ## Daily use
 
 Open an agent topic and send ordinary text. The bot validates the mapping, pastes
-the text literally into the live agent pane, sends Enter, and reacts with 👍.
+the text literally into the pane currently running that conversation, sends
+Enter, and reacts with 👍. The short suffix in the topic title comes from the
+agent's stable session ID; it distinguishes separate conversations with similar
+tmux names.
 
 Unknown slash commands such as `/review` are passed literally to the agent.
 `/send TEXT` is an explicit equivalent for ordinary text.
+
+Prompts entered directly in Codex or Claude through tmux are posted silently as
+`You (tmux)` messages in the matching topic. Prompts longer than Telegram's
+per-message limit are split across numbered messages without truncation.
+Prompts originating in Telegram are recognized and are not posted a second
+time.
 
 When the agent completes a turn, its exact final message is posted as a fresh
 topic message. Ensure the group or individual topic is not muted if you want a
@@ -75,7 +84,7 @@ push notification.
 When Codex or Claude asks one question with two to six possible answers, the
 agent ends its turn and the bridge posts an inline button for each option in the
 same topic. Tap one button. MuxPager records the first valid tap and delivers
-the selected label to that exact agent as its next user message. Use **Cancel**
+the selected label to that exact conversation as its next user message. Use **Cancel**
 when none of the choices should be assumed.
 
 Only one choice question can be active per agent topic. While its buttons are
@@ -84,8 +93,8 @@ you answer directly in tmux instead, the buttons are removed and marked as
 answered locally. A saved button selection waits when the agent is still
 working—for example on a long subprocess—and is delivered only when the current
 turn is idle. Pending questions survive a bridge restart and do not time out;
-they expire only if that exact agent pane exits or a newer question replaces
-them.
+they follow the conversation if it resumes in another pane. They expire only if
+that conversation is no longer live or a newer question replaces them.
 
 The installer registers the local `muxpager` question tool with both installed
 agent CLIs. Existing Codex and Claude processes must be restarted once after
@@ -100,7 +109,7 @@ The Control topic provides:
 
 ## Lifecycle
 
-When an agent exits but the pane returns to Bash:
+When an agent conversation exits but the pane returns to Bash:
 
 - The bridge immediately stops treating the pane as an agent.
 - Messages are rejected rather than pasted into Bash.
@@ -108,12 +117,14 @@ When an agent exits but the pane returns to Bash:
   60, to avoid flicker during quick restarts.
 - The topic then receives a silent exit note and closes without losing history.
 
-Starting the same agent type in the same tmux session/window/pane position
-reopens that topic. A different position creates a new topic.
+Resuming the same Codex or Claude session ID reopens that topic regardless of
+which tmux pane now runs it. Starting a new agent conversation in the same pane
+creates a new topic. Reopening preserves Telegram history because the agent CLI
+resume operation restores the same underlying conversation.
 
-Reopening preserves Telegram history. It does not itself restore the Codex or
-Claude conversation; use the agent CLI's resume functionality when that is
-needed.
+During an upgrade, an open position-based topic is adopted by the live
+conversation when its next hook event supplies a session ID. Until then,
+Telegram routing is visibly paused. Closed legacy topics are not reused.
 
 ## End-to-end test
 

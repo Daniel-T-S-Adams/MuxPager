@@ -112,7 +112,11 @@ assert tmux_config.count("# >>> muxpager managed configuration >>>") == 1
 assert "tmux-agent-console managed configuration" not in tmux_config
 assert f'source-file "{root}/.tmux.conf"' in tmux_config
 
-for path in (home / ".codex/hooks.json", home / ".claude/settings.json"):
+expected_managed_hooks = {
+    home / ".codex/hooks.json": 6,
+    home / ".claude/settings.json": 7,
+}
+for path, expected_count in expected_managed_hooks.items():
     payload = json.loads(path.read_text(encoding="utf-8"))
     commands = [
         hook.get("command", "")
@@ -125,7 +129,7 @@ for path in (home / ".codex/hooks.json", home / ".claude/settings.json"):
         for command in commands
         if "/.local/libexec/muxpager/hooks/" in command
     ]
-    assert len(managed) == 5
+    assert len(managed) == expected_count
 
 claude = json.loads((home / ".claude/settings.json").read_text(encoding="utf-8"))
 assert claude["model"] == "existing-model"

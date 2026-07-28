@@ -62,13 +62,18 @@ run_hook() {
         "$REPO_DIR/hooks/codex-hook.sh" "$hook_name"
 }
 
-run_hook "SessionStart"
+run_hook "SessionStart" \
+    '{"hook_event_name":"SessionStart","session_id":"codex-session-123","source":"startup"}'
 session_status="$(cat "$STATUS_DIR/codex-hooks.status")"
 pane_status="$(cat "$PANE_DIR/codex-hooks_%9.status")"
 agent_name="$(cat "$PANE_DIR/codex-hooks_%9.agent")"
+conversation_agent="$(sed -n '1p' "$PANE_DIR/codex-hooks_%9.conversation")"
+conversation_id="$(sed -n '2p' "$PANE_DIR/codex-hooks_%9.conversation")"
 assert_eq "done" "$session_status" "SessionStart should seed the session as done"
 assert_eq "done" "$pane_status" "SessionStart should seed the pane as done"
 assert_eq "codex" "$agent_name" "Codex hooks should persist the pane agent name"
+assert_eq "codex" "$conversation_agent" "Codex hooks should identify the conversation agent"
+assert_eq "codex-session-123" "$conversation_id" "Codex hooks should persist the stable session ID"
 [ -f "$REFRESH_FILE" ] || { echo "Assertion failed: SessionStart should touch sidebar refresh marker" >&2; exit 1; }
 session_start_refresh=$(<"$REFRESH_FILE")
 
@@ -105,6 +110,32 @@ if [ -f "$PARKED_DIR/codex-hooks_%9.parked" ]; then
     exit 1
 fi
 
+run_hook "UserPromptSubmit" \
+    '{"hook_event_name":"UserPromptSubmit","session_id":"codex-session-123","prompt":"Exact local Codex prompt.\nSecond line."}'
+prompt_file=$(find "$PANE_DIR/conversations" -type f -name '*.prompt' -print -quit)
+[ -n "$prompt_file" ] || {
+    echo "Assertion failed: Codex UserPromptSubmit should queue the exact local prompt" >&2
+    exit 1
+}
+assert_eq $'Exact local Codex prompt.\nSecond line.' "$(cat "$prompt_file")" \
+    "Codex UserPromptSubmit should preserve the complete prompt"
+rm -rf "$PANE_DIR/conversations"
+
+telegram_prompt_hash=$(printf '%s' 'Prompt from Telegram' | sha256sum | awk '{print $1}')
+printf '{"prompt_sha256":"%s","created_at":%s}\n' \
+    "$telegram_prompt_hash" "$(date +%s)" \
+    > "$PANE_DIR/codex-hooks_%9.telegram-prompt"
+run_hook "UserPromptSubmit" \
+    '{"hook_event_name":"UserPromptSubmit","session_id":"codex-session-123","prompt":"Prompt from Telegram"}'
+if find "$PANE_DIR" -type f -name '*.prompt' -print -quit | grep -q .; then
+    echo "Assertion failed: Telegram-originated Codex prompt should not be queued" >&2
+    exit 1
+fi
+if [ -f "$PANE_DIR/codex-hooks_%9.telegram-prompt" ]; then
+    echo "Assertion failed: matched Telegram prompt marker should be consumed" >&2
+    exit 1
+fi
+
 echo "parked" > "$STATUS_DIR/codex-hooks.status"
 rm -f "$PANE_DIR/codex-hooks_%9.status"
 : > "$PARKED_DIR/codex-hooks.parked"
@@ -117,12 +148,26 @@ if [ ! -f "$PARKED_DIR/codex-hooks.parked" ]; then
 fi
 
 rm -f "$PARKED_DIR/codex-hooks.parked"
-run_hook "Stop" '{"hook_event_name":"Stop","last_assistant_message":"Exact Codex response.\nSecond line."}'
+run_hook "Stop" '{"hook_event_name":"Stop","session_id":"codex-session-123","last_assistant_message":"Exact Codex response.\nSecond line."}'
 session_status="$(cat "$STATUS_DIR/codex-hooks.status")"
 pane_status="$(cat "$PANE_DIR/codex-hooks_%9.status")"
 assert_eq "done" "$session_status" "Stop should mark the session done"
 assert_eq "done" "$pane_status" "Stop should mark the pane done"
-last_message="$(cat "$PANE_DIR/codex-hooks_%9.last-message")"
+last_message_file=$(find "$PANE_DIR/conversations" -type f -name '*.last-message' -print -quit)
+last_message="$(cat "$last_message_file")"
 assert_eq $'Exact Codex response.\nSecond line.' "$last_message" "Codex Stop should cache the exact assistant response"
+
+run_hook "SessionEnd" \
+    '{"hook_event_name":"SessionEnd","session_id":"different-session","reason":"other"}'
+[ -f "$PANE_DIR/codex-hooks_%9.conversation" ] || {
+    echo "Assertion failed: a stale Codex SessionEnd must not clear a newer conversation" >&2
+    exit 1
+}
+run_hook "SessionEnd" \
+    '{"hook_event_name":"SessionEnd","session_id":"codex-session-123","reason":"other"}'
+[ ! -f "$PANE_DIR/codex-hooks_%9.conversation" ] || {
+    echo "Assertion failed: Codex SessionEnd should clear its matching conversation identity" >&2
+    exit 1
+}
 
 echo "Codex hook lifecycle checks passed"

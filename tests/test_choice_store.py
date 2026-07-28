@@ -20,6 +20,7 @@ class ChoiceStoreTests(unittest.TestCase):
             "window_index": "0",
             "pane_index": "1",
             "agent": "codex",
+            "conversation_id": "codex-session-123",
             "question": "Which deployment should I use?",
             "options": [
                 {"label": "Staging", "description": "Safer test environment"},
@@ -36,6 +37,9 @@ class ChoiceStoreTests(unittest.TestCase):
         self.assertEqual("pending", choice["state"])
         self.assertEqual("0", choice["options"][0]["id"])
         self.assertEqual("1", choice["options"][1]["id"])
+        self.assertEqual(
+            "conversation\x1fcodex\x1fcodex-session-123", choice["topic_key"]
+        )
         self.assertEqual(0o700, self.store.root.stat().st_mode & 0o777)
         path = self.store.root / f"{choice['id']}.json"
         self.assertEqual(0o600, path.stat().st_mode & 0o777)
@@ -50,7 +54,9 @@ class ChoiceStoreTests(unittest.TestCase):
     def test_local_prompt_wins_before_a_button_is_selected(self) -> None:
         choice = self.create(agent="claude")
 
-        changed = self.store.mark_local_answer("%2", "claude", now=102.0)
+        changed = self.store.mark_local_answer(
+            "%2", "claude", "codex-session-123", now=102.0
+        )
 
         self.assertEqual([choice["id"]], [item["id"] for item in changed])
         self.assertEqual("answered_locally", self.store.get(choice["id"])["state"])
@@ -66,9 +72,23 @@ class ChoiceStoreTests(unittest.TestCase):
             },
         )
 
-        self.store.mark_local_answer("%2", "codex", now=103.0)
+        self.store.mark_local_answer(
+            "%2", "codex", "codex-session-123", now=103.0
+        )
 
         self.assertEqual("delivered", self.store.get(choice["id"])["state"])
+
+    def test_local_prompt_does_not_answer_an_old_conversation_in_the_same_pane(
+        self,
+    ) -> None:
+        choice = self.create()
+
+        changed = self.store.mark_local_answer(
+            "%2", "codex", "different-session", now=103.0
+        )
+
+        self.assertEqual([], changed)
+        self.assertEqual("pending", self.store.get(choice["id"])["state"])
 
     def test_invalid_questions_are_rejected(self) -> None:
         with self.assertRaises(ChoiceStoreError):

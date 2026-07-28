@@ -5,6 +5,17 @@
     ]
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.local/libexec/muxpager/hooks/better-hook.sh\" SessionStart"
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "hooks": [
@@ -50,6 +61,16 @@
           {
             "type": "command",
             "command": "bash \"$HOME/.local/libexec/muxpager/hooks/better-hook.sh\" Stop"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.local/libexec/muxpager/hooks/better-hook.sh\" SessionEnd"
           }
         ]
       }

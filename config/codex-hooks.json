@@ -2,7 +2,7 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup|resume",
+        "matcher": "startup|resume|clear",
         "hooks": [
           {
             "type": "command",
@@ -47,6 +47,16 @@
           {
             "type": "command",
             "command": "bash \"$HOME/.local/libexec/muxpager/hooks/codex-hook.sh\" Stop"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.local/libexec/muxpager/hooks/codex-hook.sh\" SessionEnd"
           }
         ]
       }

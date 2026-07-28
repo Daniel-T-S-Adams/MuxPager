@@ -124,11 +124,39 @@ def resolve_pane(tmux_bin: str = "tmux") -> dict[str, str]:
     }
 
 
+def resolve_conversation_id(pane: dict[str, str], agent: str) -> str:
+    status_root = Path(
+        os.environ.get(
+            "MUXPAGER_STATUS_DIR",
+            str(Path.home() / ".cache" / "tmux-agent-status"),
+        )
+    ).expanduser()
+    identity_file = (
+        status_root
+        / "panes"
+        / f"{pane['session']}_{pane['pane_id']}.conversation"
+    )
+    try:
+        cached_agent, conversation_id = identity_file.read_text(
+            encoding="utf-8"
+        ).splitlines()[:2]
+    except (OSError, ValueError):
+        raise ChoiceStoreError(
+            "the agent has not reported its conversation identity yet"
+        ) from None
+    if cached_agent != agent or not conversation_id:
+        raise ChoiceStoreError(
+            "the agent has not reported its conversation identity yet"
+        )
+    return conversation_id
+
+
 def create_choice(arguments: Any) -> dict[str, Any]:
     if not isinstance(arguments, dict):
         raise ChoiceStoreError("ask_choice arguments must be an object")
     agent = os.environ.get("MUXPAGER_AGENT", "").strip().lower()
     pane = resolve_pane(os.environ.get("MUXPAGER_TMUX_BIN", "tmux"))
+    conversation_id = resolve_conversation_id(pane, agent)
     store = ChoiceStore(
         Path(os.environ["MUXPAGER_CHOICE_DIR"]).expanduser()
         if os.environ.get("MUXPAGER_CHOICE_DIR")
@@ -137,6 +165,7 @@ def create_choice(arguments: Any) -> dict[str, Any]:
     choice = store.create(
         **pane,
         agent=agent,
+        conversation_id=conversation_id,
         question=arguments.get("question", ""),
         options=arguments.get("options"),
     )

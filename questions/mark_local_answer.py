@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import sys
@@ -20,9 +21,16 @@ def main() -> int:
     if not pane_id.startswith("%"):
         return 0
     agent = sys.argv[1].lower() if len(sys.argv) > 1 else None
+    try:
+        payload = json.load(sys.stdin)
+    except (json.JSONDecodeError, OSError):
+        return 0
+    conversation_id = payload.get("session_id")
+    if not isinstance(conversation_id, str) or not conversation_id:
+        return 0
     choice_dir = os.environ.get("MUXPAGER_CHOICE_DIR")
     store = ChoiceStore(Path(choice_dir).expanduser() if choice_dir else None)
-    store.mark_local_answer(pane_id, agent)
+    store.mark_local_answer(pane_id, agent, conversation_id)
     return 0
 
 

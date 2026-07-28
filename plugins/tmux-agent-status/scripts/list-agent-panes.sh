@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
 # Print one tab-separated row for every live local agent pane:
-# pane_id, session, window_index, window_name, pane_index, agent, status.
+# pane_id, session, window_index, window_name, pane_index, agent, status,
+# conversation_id.
 # Agent liveness and pane status use the same helpers as the sidebar/switcher.
 
 set -u
@@ -23,6 +24,28 @@ while IFS=$'\t' read -r pane_id session window_index window_name pane_index pane
     match_pid=$(find_matching_descendant_pid "$pane_pid" 2>/dev/null) || continue
     agent=$(agent_name_for_process "$match_pid" 2>/dev/null) || continue
     status=$(get_pane_status "$session" "$pane_id" 2>/dev/null || true)
+    conversation_id=""
+
+    identity_file="$PANE_DIR/${session}_${pane_id}.conversation"
+    if [ -f "$identity_file" ]; then
+        IFS= read -r cached_agent < "$identity_file" || cached_agent=""
+        conversation_id=$(sed -n '2p' "$identity_file" 2>/dev/null || true)
+        [ "$cached_agent" = "$agent" ] || conversation_id=""
+
+        # A crashed agent may not emit SessionEnd before another process of the
+        # same type reuses its pane. On Linux, suppress an identity older than
+        # the detected agent process until SessionStart writes the new one.
+        proc_root="${MUXPAGER_PROC_ROOT:-/proc}"
+        if [ -n "$conversation_id" ] && [ -d "$proc_root/$match_pid" ]; then
+            identity_mtime=$(stat -c %Y "$identity_file" 2>/dev/null || true)
+            process_started=$(stat -c %Y "$proc_root/$match_pid" 2>/dev/null || true)
+            if [[ "$identity_mtime" =~ ^[0-9]+$ ]] && \
+               [[ "$process_started" =~ ^[0-9]+$ ]] && \
+               [ "$identity_mtime" -lt "$process_started" ]; then
+                conversation_id=""
+            fi
+        fi
+    fi
 
     case "$status" in
         working|done|ask|parked) ;;
@@ -34,7 +57,8 @@ while IFS=$'\t' read -r pane_id session window_index window_name pane_index pane
     session=${session//$'\t'/ }
     window_name=${window_name//$'\t'/ }
     agent=${agent//$'\t'/ }
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    conversation_id=${conversation_id//$'\t'/ }
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$pane_id" "$session" "$window_index" "$window_name" \
-        "$pane_index" "$agent" "$status"
+        "$pane_index" "$agent" "$status" "$conversation_id"
 done <<< "$rows"

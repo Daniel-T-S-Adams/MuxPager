@@ -245,7 +245,8 @@ collect_data() {
         fi
 
         stale_agent_sessions[$owner]=1
-        rm -f "$agent_file" "$pane_dir/${owner}_${pid_id}.status"
+        rm -f "$agent_file" "$pane_dir/${owner}_${pid_id}.status" \
+            "$pane_dir/${owner}_${pid_id}.conversation"
         rm -f "$PARKED_DIR/${owner}_${pid_id}.parked"
     done
 
@@ -654,7 +655,8 @@ collect_data() {
         [[ -n "${sess_seen[$sname]:-}" ]] && continue
         rm -f "$sf" "$STATUS_DIR/${sname}-remote.status"
         rm -f "$PARKED_DIR/${sname}.parked" "$PARKED_DIR/${sname}_"*.parked
-        rm -f "$STATUS_DIR/panes/${sname}_"*.status "$STATUS_DIR/panes/${sname}_"*.agent
+        rm -f "$STATUS_DIR/panes/${sname}_"*.status "$STATUS_DIR/panes/${sname}_"*.agent \
+            "$STATUS_DIR/panes/${sname}_"*.conversation
     done
 
     # Clean up pane metadata for dead panes.
@@ -671,5 +673,12 @@ collect_data() {
         bname=$(basename "$paf" .agent)
         pid_id="${bname##*_}"
         [[ -z "${LIVE_PANES[$pid_id]:-}" ]] && rm -f "$paf"
+    done
+    for pcf in "$STATUS_DIR/panes/"*.conversation; do
+        [ -f "$pcf" ] || continue
+        local bname pid_id
+        bname=$(basename "$pcf" .conversation)
+        pid_id="${bname##*_}"
+        [[ -z "${LIVE_PANES[$pid_id]:-}" ]] && rm -f "$pcf"
     done
 }
