@@ -25,6 +25,7 @@ bash -n \
     "$PROJECT_ROOT/telegram/setup.sh" \
     "$PROJECT_ROOT/scripts/doctor.sh" \
     "$PROJECT_ROOT/scripts/setup-runtime-links.sh" \
+    "$PROJECT_ROOT/plugins/tmux-agent-status/hooks/cache-user-prompt.sh" \
     "$PROJECT_ROOT/plugins/tmux-agent-status/hooks/choice-redirect.sh"
 
 "$PROJECT_ROOT/tests/test_path_portability.sh"

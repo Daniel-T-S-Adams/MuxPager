@@ -5,12 +5,12 @@ the local tmux UI and the private Telegram topic group.
 
 ```text
 Codex hooks ──┐
-              ├─► pane status/message cache ─► process-tree validation
-Claude hooks ─┘                                  │
-                                                ├─► permanent sidebar
-                                                ├─► fzf switcher
-                                                ├─► tmux status line
-                                                └─► Telegram bridge
+              ├─► pane status/prompt/message cache ─► process validation
+Claude hooks ─┘                                         │
+                                                       ├─► permanent sidebar
+                                                       ├─► fzf switcher
+                                                       ├─► tmux status line
+                                                       └─► Telegram bridge
 
 Codex/Claude MCP choice tool ─► durable choice store ─► Telegram buttons
                                                             │
@@ -47,23 +47,34 @@ Only validated, live agent panes appear. Consumers should not infer agent
 presence from window names, cached hook files, or foreground process names
 alone.
 
-The Telegram bridge also reads the exact cached final message from:
+The Telegram bridge reads the exact cached final message and queued local
+prompts from:
 
 ```text
 ~/.cache/tmux-agent-status/panes/<session>_<pane-id>.last-message
+~/.cache/tmux-agent-status/panes/<session>_<pane-id>.prompts/*.prompt
 ```
 
 ## Runtime state
 
 | State | Default location |
 | --- | --- |
-| Agent statuses and final messages | `~/.cache/tmux-agent-status/` |
+| Agent statuses, local prompts, and final messages | `~/.cache/tmux-agent-status/` |
 | Telegram token and allowed user | `~/.config/tmux-telegram-bridge/env` |
 | Telegram group/topic mapping | `~/.local/state/tmux-telegram-bridge/state.json` |
 | Pending and completed choice questions | `~/.local/state/tmux-telegram-bridge/choices/` |
 | Installer ownership metadata | `~/.config/muxpager/install.json` |
 
 Credentials and learned chat IDs are never stored in the checkout.
+
+## Prompt mirroring
+
+Codex and Claude `UserPromptSubmit` hooks atomically queue each complete local
+prompt with mode `0600`. Every live-pane reconciliation posts queued prompts to
+the matching topic in order and removes each file only after Telegram accepts
+it. Long prompts are split without dropping text. Before the bridge pastes a
+Telegram message into tmux, it writes a short-lived SHA-256 origin marker;
+the hook consumes that marker instead of queueing a duplicate.
 
 ## Telegram lifecycle
 

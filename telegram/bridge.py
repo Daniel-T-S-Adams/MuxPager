@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -27,6 +28,7 @@ from questions.store import ACTIVE_STATES, ChoiceStore  # noqa: E402
 
 LOG = logging.getLogger("tmux-telegram-bridge")
 TELEGRAM_TEXT_LIMIT = 4096
+LOCAL_PROMPT_CHUNK_LIMIT = 3900
 MAX_INPUT_LENGTH = 4096
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 
@@ -75,6 +77,12 @@ class AgentPane:
             parts.append(window)
         parts.append(f"{self.agent} #{self.pane_index}")
         return trim_label(" · ".join(parts), 128)
+
+
+@dataclass(frozen=True)
+class CachedPrompt:
+    path: Path
+    text: str
 
 
 def parse_agent_rows(output: str) -> list[AgentPane]:
@@ -139,6 +147,25 @@ def trim_label(text: str, limit: int) -> str:
     return text[: limit - 1] + "…"
 
 
+def split_utf16(text: str, limit: int) -> list[str]:
+    """Split text without loss while respecting Telegram's UTF-16 limits."""
+    if limit < 1:
+        raise ValueError("limit must be positive")
+    chunks: list[str] = []
+    start = 0
+    units = 0
+    for index, character in enumerate(text):
+        character_units = len(character.encode("utf-16-le")) // 2
+        if units and units + character_units > limit:
+            chunks.append(text[start:index])
+            start = index
+            units = 0
+        units += character_units
+    if start < len(text):
+        chunks.append(text[start:])
+    return chunks
+
+
 def clean_capture(output: str) -> str:
     output = ANSI_RE.sub("", output).replace("\x00", "")
     lines = [line.rstrip() for line in output.splitlines()]
@@ -191,12 +218,84 @@ class TmuxClient:
     def _message_path(self, pane: AgentPane) -> Path:
         return self.message_dir / f"{pane.session}_{pane.pane_id}.last-message"
 
+    def _prompt_dir(self, pane: AgentPane) -> Path:
+        return self.message_dir / f"{pane.session}_{pane.pane_id}.prompts"
+
+    def _telegram_prompt_marker_path(self, pane: AgentPane) -> Path:
+        return self.message_dir / f"{pane.session}_{pane.pane_id}.telegram-prompt"
+
     def message_version(self, pane: AgentPane) -> str:
         try:
             stat = self._message_path(pane).stat()
         except OSError:
             return ""
         return f"{stat.st_mtime_ns}:{stat.st_size}"
+
+    def pending_local_prompts(self, pane: AgentPane) -> list[CachedPrompt]:
+        directory = self._prompt_dir(pane)
+        try:
+            paths = sorted(directory.glob("*.prompt"))
+        except OSError:
+            return []
+        prompts: list[CachedPrompt] = []
+        for path in paths:
+            if path.is_symlink():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if text.strip():
+                prompts.append(CachedPrompt(path, text))
+        return prompts
+
+    def acknowledge_local_prompt(self, prompt: CachedPrompt) -> None:
+        try:
+            prompt.path.unlink()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise TmuxError("Could not acknowledge a mirrored local prompt") from exc
+        try:
+            prompt.path.parent.rmdir()
+        except OSError:
+            pass
+
+    def _write_telegram_prompt_marker(
+        self, pane: AgentPane, message: str
+    ) -> Path:
+        self.message_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        target = self._telegram_prompt_marker_path(pane)
+        temporary_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                delete=False,
+                dir=self.message_dir,
+                prefix=".telegram-prompt-",
+            ) as handle:
+                json.dump(
+                    {
+                        "prompt_sha256": hashlib.sha256(
+                            message.encode("utf-8")
+                        ).hexdigest(),
+                        "created_at": time.time(),
+                    },
+                    handle,
+                    separators=(",", ":"),
+                )
+                temporary_path = handle.name
+            os.chmod(temporary_path, 0o600)
+            os.replace(temporary_path, target)
+        except OSError as exc:
+            if temporary_path:
+                try:
+                    os.unlink(temporary_path)
+                except FileNotFoundError:
+                    pass
+            raise TmuxError("Could not mark a Telegram-originated prompt") from exc
+        return target
 
     def capture(self, pane_id: str) -> str:
         try:
@@ -255,15 +354,17 @@ class TmuxClient:
         if result.stdout.strip() != f"0\t{pane_id}":
             raise TmuxError(f"Pane {pane_id} is no longer a live target")
 
-    def send_message(self, pane_id: str, message: str) -> None:
+    def send_message(self, pane: AgentPane, message: str) -> None:
         if not message.strip():
             raise TmuxError("Refusing to send an empty message")
         if len(message) > MAX_INPUT_LENGTH:
             raise TmuxError(f"Message is longer than {MAX_INPUT_LENGTH} characters")
-        self._validate_target(pane_id)
+        self._validate_target(pane.pane_id)
+        marker_path = self._write_telegram_prompt_marker(pane, message)
 
         buffer_name = f"telegram-{os.getpid()}-{time.time_ns()}"
         temporary_path = ""
+        delivered = False
         try:
             with tempfile.NamedTemporaryFile(
                 mode="w", encoding="utf-8", delete=False, prefix="tmux-telegram-"
@@ -287,18 +388,19 @@ class TmuxClient:
                     "-b",
                     buffer_name,
                     "-t",
-                    pane_id,
+                    pane.pane_id,
                 ],
                 check=True,
                 capture_output=True,
                 timeout=5,
             )
             subprocess.run(
-                [self.tmux_bin, "send-keys", "-t", pane_id, "Enter"],
+                [self.tmux_bin, "send-keys", "-t", pane.pane_id, "Enter"],
                 check=True,
                 capture_output=True,
                 timeout=5,
             )
+            delivered = True
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             try:
                 subprocess.run(
@@ -309,8 +411,15 @@ class TmuxClient:
                 )
             except (OSError, subprocess.TimeoutExpired):
                 pass
-            raise TmuxError(f"Could not send the message to pane {pane_id}") from exc
+            raise TmuxError(
+                f"Could not send the message to pane {pane.pane_id}"
+            ) from exc
         finally:
+            if not delivered:
+                try:
+                    marker_path.unlink()
+                except FileNotFoundError:
+                    pass
             if temporary_path:
                 try:
                     os.unlink(temporary_path)
@@ -928,7 +1037,7 @@ class Bridge:
             )
 
         try:
-            self.tmux.send_message(pane.pane_id, prompt)
+            self.tmux.send_message(pane, prompt)
         except TmuxError:
             self.choice_store.update(
                 str(delivering["id"]),
@@ -1079,6 +1188,35 @@ class Bridge:
         text = heading + "\n\n" + trim_middle(output, max(200, available))
         self._send_to_agent_topic(pane, text)
 
+    def _post_local_prompt(self, pane: AgentPane, prompt: str) -> None:
+        chunks = split_utf16(prompt, LOCAL_PROMPT_CHUNK_LIMIT)
+        total = len(chunks)
+        for index, chunk in enumerate(chunks, start=1):
+            heading = "💻 You (tmux):"
+            if total > 1:
+                heading = f"💻 You (tmux) [{index}/{total}]:"
+            self._send_to_agent_topic(
+                pane,
+                heading + "\n\n" + chunk,
+                disable_notification=True,
+            )
+
+    def _sync_local_prompts(self, panes: list[AgentPane]) -> None:
+        for pane in panes:
+            for prompt in self.tmux.pending_local_prompts(pane):
+                try:
+                    self._post_local_prompt(pane, prompt.text)
+                except TelegramError as exc:
+                    LOG.warning(
+                        "Could not mirror local prompt for %s: %s", pane.label, exc
+                    )
+                    break
+                try:
+                    self.tmux.acknowledge_local_prompt(prompt)
+                except TmuxError as exc:
+                    LOG.warning("%s", exc)
+                    break
+
     def _sync_topics(self) -> int:
         if self._group_chat_id() is None:
             return 0
@@ -1097,6 +1235,7 @@ class Bridge:
 
         self._close_missing_topics(live_keys, time.time())
         self._sync_choices(panes)
+        self._sync_local_prompts(panes)
 
         current_status = {pane.topic_key: pane.status for pane in panes}
         current_versions = {
@@ -1353,7 +1492,7 @@ class Bridge:
                 "offered answers or Cancel before sending another message.",
             )
             return
-        self.tmux.send_message(pane.pane_id, outgoing)
+        self.tmux.send_message(pane, outgoing)
         self._acknowledge(message)
 
     def run(self) -> None:

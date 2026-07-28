@@ -39,6 +39,8 @@ tmux                                        Telegram
 - A private Telegram group with one persistent topic for each live agent pane.
 - Phone-to-agent messaging that delivers text only to the selected live agent;
   Telegram messages are never constructed as shell commands.
+- Complete prompts submitted locally in tmux are mirrored silently into the
+  matching Telegram topic, without duplicating prompts sent from Telegram.
 - Telegram notifications containing the agent's exact final response.
 - Telegram buttons for a Codex or Claude question that has one answer chosen
   from a short list; the selected answer returns to the correct agent pane.
@@ -198,10 +200,10 @@ In the Telegram `Control` topic:
 
 ## How it works
 
-Agent hooks record lifecycle state and exact final messages under
-`~/.cache/tmux-agent-status`. The collector validates those records against the
-live tmux pane process tree. The sidebar, switcher, status line, and Telegram
-bridge all consume that validated state.
+Agent hooks record lifecycle state, queue exact locally submitted prompts, and
+cache exact final messages under `~/.cache/tmux-agent-status`. The collector
+validates those records against the live tmux pane process tree. The sidebar,
+switcher, status line, and Telegram bridge all consume that validated state.
 
 `bin/muxpager-agent-list` is the stable integration boundary. It emits one
 tab-separated row per live agent pane; Telegram does not depend directly on
@@ -220,6 +222,9 @@ and extension boundary.
   into a shell command.
 - Messages are rejected when the mapped agent has exited, even if its Bash pane
   remains open.
+- Local prompt queue files use mode `0600`, are removed after Telegram accepts
+  them, and contain the complete prompt text. Treat the private Telegram group
+  as part of the prompt-data trust boundary.
 - Bot credentials and learned topic IDs live in mode-`0600` files outside the
   repository.
 

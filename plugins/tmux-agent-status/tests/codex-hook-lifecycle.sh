@@ -105,6 +105,32 @@ if [ -f "$PARKED_DIR/codex-hooks_%9.parked" ]; then
     exit 1
 fi
 
+run_hook "UserPromptSubmit" \
+    '{"hook_event_name":"UserPromptSubmit","prompt":"Exact local Codex prompt.\nSecond line."}'
+prompt_file=$(find "$PANE_DIR/codex-hooks_%9.prompts" -type f -name '*.prompt' -print -quit)
+[ -n "$prompt_file" ] || {
+    echo "Assertion failed: Codex UserPromptSubmit should queue the exact local prompt" >&2
+    exit 1
+}
+assert_eq $'Exact local Codex prompt.\nSecond line.' "$(cat "$prompt_file")" \
+    "Codex UserPromptSubmit should preserve the complete prompt"
+rm -rf "$PANE_DIR/codex-hooks_%9.prompts"
+
+telegram_prompt_hash=$(printf '%s' 'Prompt from Telegram' | sha256sum | awk '{print $1}')
+printf '{"prompt_sha256":"%s","created_at":%s}\n' \
+    "$telegram_prompt_hash" "$(date +%s)" \
+    > "$PANE_DIR/codex-hooks_%9.telegram-prompt"
+run_hook "UserPromptSubmit" \
+    '{"hook_event_name":"UserPromptSubmit","prompt":"Prompt from Telegram"}'
+if [ -d "$PANE_DIR/codex-hooks_%9.prompts" ]; then
+    echo "Assertion failed: Telegram-originated Codex prompt should not be queued" >&2
+    exit 1
+fi
+if [ -f "$PANE_DIR/codex-hooks_%9.telegram-prompt" ]; then
+    echo "Assertion failed: matched Telegram prompt marker should be consumed" >&2
+    exit 1
+fi
+
 echo "parked" > "$STATUS_DIR/codex-hooks.status"
 rm -f "$PANE_DIR/codex-hooks_%9.status"
 : > "$PARKED_DIR/codex-hooks.parked"

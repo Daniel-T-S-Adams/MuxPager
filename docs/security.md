@@ -30,6 +30,10 @@ or Telegram usernames as identity.
 - Message text is written to a mode-`0600` temporary file, loaded into a private
   tmux buffer, pasted literally, and followed by Enter. The message is never
   evaluated by a shell belonging to the bridge.
+- A local `UserPromptSubmit` hook queues the complete prompt in a mode-`0600`
+  file. The bridge sends it only to the topic mapped to that validated live
+  pane, then removes the queue file. Telegram-originated prompts carry a
+  short-lived SHA-256 content marker so the hook does not mirror them twice.
 - If the agent exits to Bash, the live-agent lookup fails and delivery is
   refused.
 - Choice-button callback data contains only a random request ID and option
@@ -43,6 +47,10 @@ or Telegram usernames as identity.
 An agent may itself choose to execute a command after reading a Telegram
 message. Telegram therefore has the same authority as typing a prompt directly
 into that agent; it does not bypass the agent's own approval or sandbox policy.
+
+Because complete local prompts are mirrored, their text leaves the server and
+is retained in the private Telegram topic. Do not type secrets into an agent
+prompt unless storing that prompt in Telegram is acceptable.
 
 The installer allows Claude to call only the exact
 `mcp__muxpager__ask_choice` tool without another terminal approval prompt. That

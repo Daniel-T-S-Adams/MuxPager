@@ -77,6 +77,16 @@ if [ -f "$PARKED_DIR/mixed-hooks_%3.parked" ]; then
     exit 1
 fi
 
+run_hook "UserPromptSubmit" "%3" \
+    '{"hook_event_name":"UserPromptSubmit","prompt":"Exact local Claude prompt.\nSecond line."}'
+prompt_file=$(find "$PANE_DIR/mixed-hooks_%3.prompts" -type f -name '*.prompt' -print -quit)
+[ -n "$prompt_file" ] || {
+    echo "Assertion failed: Claude UserPromptSubmit should queue the exact local prompt" >&2
+    exit 1
+}
+assert_eq $'Exact local Claude prompt.\nSecond line.' "$(cat "$prompt_file")" \
+    "Claude UserPromptSubmit should preserve the complete prompt"
+
 echo "working" > "$PANE_DIR/mixed-hooks_%13.status"
 echo "codex" > "$PANE_DIR/mixed-hooks_%13.agent"
 

@@ -68,6 +68,12 @@ the text literally into the live agent pane, sends Enter, and reacts with 👍.
 Unknown slash commands such as `/review` are passed literally to the agent.
 `/send TEXT` is an explicit equivalent for ordinary text.
 
+Prompts entered directly in Codex or Claude through tmux are posted silently as
+`You (tmux)` messages in the matching topic. Prompts longer than Telegram's
+per-message limit are split across numbered messages without truncation.
+Prompts originating in Telegram are recognized and are not posted a second
+time.
+
 When the agent completes a turn, its exact final message is posted as a fresh
 topic message. Ensure the group or individual topic is not muted if you want a
 push notification.

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -58,6 +60,9 @@ class TelegramBridgeTests(unittest.TestCase):
 
     def test_send_message_uses_a_private_buffer_without_a_shell(self) -> None:
         client = bridge.TmuxClient(REPO_ROOT)
+        pane = bridge.AgentPane(
+            "%2", "tr", "0", "codex", "1", "codex", "done"
+        )
         calls: list[list[str]] = []
         loaded_text: list[str] = []
 
@@ -70,13 +75,34 @@ class TelegramBridgeTests(unittest.TestCase):
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
         dangerous_text = "$(touch /tmp/should-not-run); `id`; hello"
-        with mock.patch.object(bridge.subprocess, "run", side_effect=fake_run):
-            client.send_message("%2", dangerous_text)
+        with tempfile.TemporaryDirectory() as temporary:
+            client.message_dir = Path(temporary)
+            with mock.patch.object(bridge.subprocess, "run", side_effect=fake_run):
+                client.send_message(pane, dangerous_text)
+            marker = json.loads(
+                (client.message_dir / "tr_%2.telegram-prompt").read_text(
+                    encoding="utf-8"
+                )
+            )
 
         self.assertEqual([dangerous_text], loaded_text)
+        self.assertEqual(
+            hashlib.sha256(dangerous_text.encode("utf-8")).hexdigest(),
+            marker["prompt_sha256"],
+        )
         self.assertFalse(any("shell=True" in str(call) for call in calls))
         self.assertIn("paste-buffer", [call[1] for call in calls])
         self.assertEqual("send-keys", calls[-1][1])
+
+    def test_split_utf16_preserves_complete_unicode_text(self) -> None:
+        original = "a🙂b🙂c"
+
+        chunks = bridge.split_utf16(original, 3)
+
+        self.assertEqual(original, "".join(chunks))
+        self.assertTrue(
+            all(len(chunk.encode("utf-16-le")) // 2 <= 3 for chunk in chunks)
+        )
 
 
 class FakeTelegram:
@@ -129,6 +155,7 @@ class FakeTmux:
             pane.topic_key: ("Exact final response.", "Last agent message")
             for pane in panes
         }
+        self.prompts = {pane.topic_key: [] for pane in panes}
         self.sent: list[tuple[str, str]] = []
 
     def agents(self):
@@ -140,8 +167,22 @@ class FakeTmux:
     def last_output(self, pane):
         return self.outputs[pane.topic_key]
 
-    def send_message(self, pane_id, text):
-        self.sent.append((pane_id, text))
+    def queue_prompt(self, pane, text, name="prompt"):
+        prompt = bridge.CachedPrompt(Path(name), text)
+        self.prompts.setdefault(pane.topic_key, []).append(prompt)
+        return prompt
+
+    def pending_local_prompts(self, pane):
+        return list(self.prompts.get(pane.topic_key, []))
+
+    def acknowledge_local_prompt(self, prompt):
+        for prompts in self.prompts.values():
+            if prompt in prompts:
+                prompts.remove(prompt)
+                return
+
+    def send_message(self, pane, text):
+        self.sent.append((pane.pane_id, text))
 
 
 class ForumTopicBridgeTests(unittest.TestCase):
@@ -250,6 +291,56 @@ class ForumTopicBridgeTests(unittest.TestCase):
 
         self.assertEqual([("%2", "Please run the tests")], self.tmux.sent)
         self.assertIn("setMessageReaction", [method for method, _ in self.telegram.calls])
+
+    def test_local_prompt_is_mirrored_silently_into_its_topic(self) -> None:
+        thread_id = self.configure()
+        self.telegram.calls.clear()
+        self.tmux.queue_prompt(self.pane, "Please run the tests\nand report back.")
+
+        self.instance._sync_topics()
+
+        messages = [
+            params
+            for method, params in self.telegram.calls
+            if method == "sendMessage"
+            and params.get("message_thread_id") == thread_id
+            and params["text"].startswith("💻 You (tmux):")
+        ]
+        self.assertEqual(1, len(messages))
+        self.assertEqual(
+            "💻 You (tmux):\n\nPlease run the tests\nand report back.",
+            messages[0]["text"],
+        )
+        self.assertTrue(messages[0]["disable_notification"])
+        self.assertEqual([], self.tmux.pending_local_prompts(self.pane))
+
+    def test_long_local_prompt_is_split_without_losing_text(self) -> None:
+        self.configure()
+        self.telegram.calls.clear()
+        prompt = ("🙂 local context\n" * 500) + "final instruction"
+        self.tmux.queue_prompt(self.pane, prompt)
+
+        self.instance._sync_topics()
+
+        messages = [
+            params
+            for method, params in self.telegram.calls
+            if method == "sendMessage"
+            and params["text"].startswith("💻 You (tmux) [")
+        ]
+        self.assertGreater(len(messages), 1)
+        mirrored = "".join(
+            message["text"].split("\n\n", 1)[1] for message in messages
+        )
+        self.assertEqual(prompt, mirrored)
+        self.assertTrue(
+            all(
+                len(message["text"].encode("utf-16-le")) // 2
+                <= bridge.TELEGRAM_TEXT_LIMIT
+                for message in messages
+            )
+        )
+        self.assertEqual([], self.tmux.pending_local_prompts(self.pane))
 
     def test_completed_reply_is_posted_as_a_fresh_topic_message(self) -> None:
         thread_id = self.configure()

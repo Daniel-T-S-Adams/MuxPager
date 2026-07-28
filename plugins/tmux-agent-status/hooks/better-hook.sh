@@ -17,6 +17,8 @@ HOOK_JSON="$(cat 2>/dev/null || true)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=cache-last-message.sh
 source "$SCRIPT_DIR/cache-last-message.sh"
+# shellcheck source=cache-user-prompt.sh
+source "$SCRIPT_DIR/cache-user-prompt.sh"
 
 in_remote_session() {
     [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]
@@ -144,6 +146,7 @@ PARKED_FILE="$PARKED_DIR/${TMUX_SESSION}.parked"
 case "$HOOK_TYPE" in
     UserPromptSubmit)
         # User submitted a prompt — this is an explicit interaction, so unpark.
+        cache_local_user_prompt "$HOOK_JSON" "$TMUX_SESSION" "${TMUX_PANE:-}"
         python3 \
             "$HOME/.local/libexec/muxpager/questions/mark_local_answer.py" \
             claude >/dev/null 2>&1 || true
