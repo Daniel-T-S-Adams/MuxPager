@@ -9,13 +9,14 @@ cache_local_user_prompt() {
     local hook_json="$1"
     local tmux_session="$2"
     local tmux_pane="${3:-}"
+    local agent="${4:-}"
 
     [ -n "$hook_json" ] || return 0
     [ -n "$tmux_session" ] || return 0
     [ -n "$tmux_pane" ] || return 0
     command -v python3 >/dev/null 2>&1 || return 0
 
-    local prompt_dir="$PANE_DIR/${tmux_session}_${tmux_pane}.prompts"
+    local legacy_prompt_dir="$PANE_DIR/${tmux_session}_${tmux_pane}.prompts"
     local telegram_marker="$PANE_DIR/${tmux_session}_${tmux_pane}.telegram-prompt"
     printf '%s' "$hook_json" | python3 -c '
 import hashlib
@@ -26,8 +27,10 @@ import secrets
 import sys
 import time
 
-prompt_dir = Path(sys.argv[1])
-telegram_marker = Path(sys.argv[2])
+pane_dir = Path(sys.argv[1])
+legacy_prompt_dir = Path(sys.argv[2])
+telegram_marker = Path(sys.argv[3])
+agent = sys.argv[4]
 try:
     payload = json.load(sys.stdin)
 except (json.JSONDecodeError, OSError):
@@ -36,6 +39,16 @@ except (json.JSONDecodeError, OSError):
 prompt = payload.get("prompt")
 if not isinstance(prompt, str) or not prompt.strip():
     raise SystemExit(0)
+
+session_id = payload.get("session_id")
+if isinstance(session_id, str) and session_id and agent in {"codex", "claude"}:
+    cache_id = hashlib.sha256(
+        f"{agent}\0{session_id}".encode("utf-8")
+    ).hexdigest()
+    prompt_dir = pane_dir / "conversations" / f"{cache_id}.prompts"
+else:
+    # Backward-compatible fallback for older hook payloads during upgrades.
+    prompt_dir = legacy_prompt_dir
 
 # The bridge writes this marker immediately before pasting Telegram text into
 # the pane. Consume an exact, recent match so that message is not mirrored back
@@ -69,5 +82,6 @@ try:
     os.replace(temporary, target)
 finally:
     temporary.unlink(missing_ok=True)
-' "$prompt_dir" "$telegram_marker" >/dev/null 2>&1 || true
+' "$PANE_DIR" "$legacy_prompt_dir" "$telegram_marker" "$agent" \
+        >/dev/null 2>&1 || true
 }

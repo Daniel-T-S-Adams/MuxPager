@@ -21,6 +21,7 @@ cleanup_pane_state() {
 
     rm -f "$PANE_DIR/${session}_${pane_id}.status"
     rm -f "$PANE_DIR/${session}_${pane_id}.agent"
+    rm -f "$PANE_DIR/${session}_${pane_id}.conversation"
     rm -f "$PARKED_DIR/${session}_${pane_id}.parked"
 }
 
@@ -32,7 +33,8 @@ cleanup_session_state() {
     rm -f "$STATUS_DIR/${session}.unread"
     rm -f "$STATUS_DIR/${session}-remote.unread"
     rm -f "$PARKED_DIR/${session}.parked" "$PARKED_DIR/${session}_"*.parked
-    rm -f "$PANE_DIR/${session}_"*.status "$PANE_DIR/${session}_"*.agent
+    rm -f "$PANE_DIR/${session}_"*.status "$PANE_DIR/${session}_"*.agent \
+        "$PANE_DIR/${session}_"*.conversation
 }
 
 refresh_session_tracking() {

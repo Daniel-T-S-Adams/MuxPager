@@ -36,6 +36,7 @@ class ChoiceMcpTests(unittest.TestCase):
             environment = {
                 "MUXPAGER_AGENT": "claude",
                 "MUXPAGER_CHOICE_DIR": str(Path(temporary) / "choices"),
+                "MUXPAGER_STATUS_DIR": str(Path(temporary) / "status"),
             }
             pane = {
                 "pane_id": "%9",
@@ -43,6 +44,15 @@ class ChoiceMcpTests(unittest.TestCase):
                 "window_index": "3",
                 "pane_index": "0",
             }
+            identity = (
+                Path(environment["MUXPAGER_STATUS_DIR"])
+                / "panes"
+                / "work_%9.conversation"
+            )
+            identity.parent.mkdir(parents=True)
+            identity.write_text(
+                "claude\nclaude-session-456\n", encoding="utf-8"
+            )
             with mock.patch.dict(os.environ, environment, clear=False):
                 with mock.patch.object(mcp_server, "resolve_pane", return_value=pane):
                     result = mcp_server.create_choice(
@@ -62,6 +72,7 @@ class ChoiceMcpTests(unittest.TestCase):
             stored = json.loads(files[0].read_text(encoding="utf-8"))
             self.assertEqual("claude", stored["agent"])
             self.assertEqual("%9", stored["pane_id"])
+            self.assertEqual("claude-session-456", stored["conversation_id"])
 
     def test_stdio_handshake_lists_the_tool(self) -> None:
         messages = "\n".join(

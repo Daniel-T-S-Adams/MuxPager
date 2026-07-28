@@ -82,6 +82,10 @@ and inspect its `/hooks` view for the managed PreToolUse hook.
 
 ## Topic did not reopen
 
-The stable identity includes session name, window index, pane index, and agent
-type. Reopening Claude or Codex in another pane correctly creates a different
-topic. Run `/status` in Control and compare with `bin/muxpager-agent-list`.
+The stable identity combines agent type with the Codex or Claude session ID.
+Resuming that conversation in another pane should reuse its topic; starting a
+new conversation in the same pane should create another. Run `/status` in
+Control and compare with the final `conversation_id` field from
+`bin/muxpager-agent-list`. If the field is briefly empty after upgrading,
+submit a prompt or wait for the next hook event; delivery remains paused rather
+than falling back to pane position.

@@ -17,6 +17,12 @@ All notable changes to MuxPager are documented here. The project uses
 
 ### Changed
 
+- Telegram topics now follow the stable Codex or Claude conversation session
+  ID instead of a tmux position. Resuming a conversation in another pane keeps
+  its topic, while starting a new conversation in the same pane creates a new
+  topic; legacy open topics migrate safely on the next hook event.
+- Local prompt/final-message caches and choice requests are scoped to the same
+  conversation identity, and ambiguous duplicate resumes pause delivery.
 - Removed the timed manual Wait/snooze state and its `prefix + W`, sidebar, and
   switcher controls. Agents now remain at `?` until answered or can be parked
   indefinitely with `p`.

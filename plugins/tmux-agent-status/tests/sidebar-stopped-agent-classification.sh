@@ -67,12 +67,15 @@ chmod +x "$FAKE_BIN/ps"
 printf 'done' > "$STATUS_DIR/main.status"
 printf 'codex' > "$PANE_DIR/main_%1.agent"
 printf 'done' > "$PANE_DIR/main_%1.status"
+printf 'codex\nstopped-session\n' > "$PANE_DIR/main_%1.conversation"
 printf 'codex' > "$PANE_DIR/main_%2.agent"
 printf 'done' > "$PANE_DIR/main_%2.status"
+printf 'codex\nlive-session\n' > "$PANE_DIR/main_%2.conversation"
 
 printf 'done' > "$STATUS_DIR/stale-shell.status"
 printf 'claude' > "$PANE_DIR/stale-shell_%3.agent"
 printf 'done' > "$PANE_DIR/stale-shell_%3.status"
+printf 'claude\nexited-session\n' > "$PANE_DIR/stale-shell_%3.conversation"
 
 # Put hook markers beyond the startup grace so process liveness is authoritative.
 touch -t 202001010000 "$PANE_DIR/main_%1.agent" "$PANE_DIR/main_%1.status"
@@ -114,11 +117,17 @@ assert_contains $'R:S|stale-shell|noagent||\tstale-shell\tS' \
 
 assert_not_exists "$PANE_DIR/main_%1.agent" "stopped Codex identity should be pruned"
 assert_not_exists "$PANE_DIR/main_%1.status" "stopped Codex status should be pruned"
+assert_not_exists "$PANE_DIR/main_%1.conversation" "stopped Codex conversation should be pruned"
 assert_not_exists "$PANE_DIR/stale-shell_%3.agent" "exited Claude identity should be pruned"
 assert_not_exists "$PANE_DIR/stale-shell_%3.status" "exited Claude status should be pruned"
+assert_not_exists "$PANE_DIR/stale-shell_%3.conversation" "exited Claude conversation should be pruned"
 
 if [ ! -f "$PANE_DIR/main_%2.agent" ]; then
     echo "Assertion failed: usable Codex metadata should remain" >&2
+    exit 1
+fi
+if [ ! -f "$PANE_DIR/main_%2.conversation" ]; then
+    echo "Assertion failed: usable Codex conversation should remain" >&2
     exit 1
 fi
 

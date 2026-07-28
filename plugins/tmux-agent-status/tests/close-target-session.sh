@@ -51,6 +51,7 @@ echo "working" > "$STATUS_DIR/repo.status"
 echo "working" > "$STATUS_DIR/repo-remote.status"
 echo "done" > "$PANE_DIR/repo_%1.status"
 echo "claude" > "$PANE_DIR/repo_%1.agent"
+printf 'claude\nclaude-session-1\n' > "$PANE_DIR/repo_%1.conversation"
 echo "working" > "$PANE_DIR/repo_%2.status"
 echo "codex" > "$PANE_DIR/repo_%2.agent"
 : > "$PARKED_DIR/repo_%2.parked"
@@ -63,7 +64,8 @@ if [ -e "$STATUS_DIR/repo.status" ] || [ -e "$STATUS_DIR/repo-remote.status" ]; 
     echo "Assertion failed: closing a session should remove session status files" >&2
     exit 1
 fi
-if [ -e "$PANE_DIR/repo_%1.status" ] || [ -e "$PANE_DIR/repo_%2.agent" ]; then
+if [ -e "$PANE_DIR/repo_%1.status" ] || [ -e "$PANE_DIR/repo_%2.agent" ] || \
+   [ -e "$PANE_DIR/repo_%1.conversation" ]; then
     echo "Assertion failed: closing a session should remove pane metadata" >&2
     exit 1
 fi

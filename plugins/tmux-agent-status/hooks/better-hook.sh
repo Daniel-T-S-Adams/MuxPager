@@ -19,6 +19,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/cache-last-message.sh"
 # shellcheck source=cache-user-prompt.sh
 source "$SCRIPT_DIR/cache-user-prompt.sh"
+# shellcheck source=cache-conversation-id.sh
+source "$SCRIPT_DIR/cache-conversation-id.sh"
 
 in_remote_session() {
     [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]
@@ -143,11 +145,25 @@ TMUX_SESSION=$(get_tmux_session) || exit 0
 HOOK_TYPE="${1:-}"
 PARKED_FILE="$PARKED_DIR/${TMUX_SESSION}.parked"
 
+if [ "$HOOK_TYPE" = "SessionEnd" ]; then
+    clear_conversation_identity "$HOOK_JSON" "$TMUX_SESSION" "${TMUX_PANE:-}" "claude"
+else
+    # Existing Claude processes pick up a session identity on their next hook,
+    # even if they started before this version of MuxPager was installed.
+    cache_conversation_identity "$HOOK_JSON" "$TMUX_SESSION" "${TMUX_PANE:-}" "claude"
+fi
+
 case "$HOOK_TYPE" in
+    SessionStart)
+        if [ ! -f "$PARKED_FILE" ]; then
+            set_status "$TMUX_SESSION" "done"
+            mark_refresh
+        fi
+        ;;
     UserPromptSubmit)
         # User submitted a prompt — this is an explicit interaction, so unpark.
-        cache_local_user_prompt "$HOOK_JSON" "$TMUX_SESSION" "${TMUX_PANE:-}"
-        python3 \
+        cache_local_user_prompt "$HOOK_JSON" "$TMUX_SESSION" "${TMUX_PANE:-}" "claude"
+        printf '%s' "$HOOK_JSON" | python3 \
             "$HOME/.local/libexec/muxpager/questions/mark_local_answer.py" \
             claude >/dev/null 2>&1 || true
         clear_interaction_overrides "$TMUX_SESSION"
@@ -168,7 +184,7 @@ case "$HOOK_TYPE" in
         # finishing doesn't mean the main agent is done). If the turn ended
         # while a background task is still running, the agent isn't idle yet —
         # keep it working until a later Stop reports the task finished.
-        cache_last_assistant_message "$HOOK_JSON" "$TMUX_SESSION" "${TMUX_PANE:-}"
+        cache_last_assistant_message "$HOOK_JSON" "$TMUX_SESSION" "${TMUX_PANE:-}" "claude"
         if has_running_background_task "$HOOK_JSON"; then
             set_status "$TMUX_SESSION" "working"
         else
@@ -183,6 +199,9 @@ case "$HOOK_TYPE" in
         mark_refresh
 
         "$SCRIPT_DIR/../scripts/play-sound.sh" 2>/dev/null &
+        ;;
+    SessionEnd)
+        mark_refresh
         ;;
 esac
 

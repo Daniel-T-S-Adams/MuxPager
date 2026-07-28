@@ -20,6 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/cache-last-message.sh"
 # shellcheck source=cache-user-prompt.sh
 source "$SCRIPT_DIR/cache-user-prompt.sh"
+# shellcheck source=cache-conversation-id.sh
+source "$SCRIPT_DIR/cache-conversation-id.sh"
 
 in_remote_session() {
     [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]
@@ -106,6 +108,14 @@ TMUX_SESSION=$(get_tmux_session) || exit 0
 HOOK_TYPE="${1:-}"
 PARKED_FILE="$PARKED_DIR/${TMUX_SESSION}.parked"
 
+if [ "$HOOK_TYPE" = "SessionEnd" ]; then
+    clear_conversation_identity "$HOOK_JSON" "$TMUX_SESSION" "${TMUX_PANE:-}" "codex"
+else
+    # Every ordinary hook can backfill identity for agents that were already
+    # running when MuxPager gained conversation-aware Telegram topics.
+    cache_conversation_identity "$HOOK_JSON" "$TMUX_SESSION" "${TMUX_PANE:-}" "codex"
+fi
+
 case "$HOOK_TYPE" in
     SessionStart)
         if [ ! -f "$PARKED_FILE" ]; then
@@ -114,8 +124,8 @@ case "$HOOK_TYPE" in
         fi
         ;;
     UserPromptSubmit)
-        cache_local_user_prompt "$HOOK_JSON" "$TMUX_SESSION" "${TMUX_PANE:-}"
-        python3 \
+        cache_local_user_prompt "$HOOK_JSON" "$TMUX_SESSION" "${TMUX_PANE:-}" "codex"
+        printf '%s' "$HOOK_JSON" | python3 \
             "$HOME/.local/libexec/muxpager/questions/mark_local_answer.py" \
             codex >/dev/null 2>&1 || true
         clear_interaction_overrides "$TMUX_SESSION"
@@ -129,8 +139,11 @@ case "$HOOK_TYPE" in
         mark_refresh
         ;;
     Stop)
-        cache_last_assistant_message "$HOOK_JSON" "$TMUX_SESSION" "${TMUX_PANE:-}"
+        cache_last_assistant_message "$HOOK_JSON" "$TMUX_SESSION" "${TMUX_PANE:-}" "codex"
         set_status "$TMUX_SESSION" "done"
+        mark_refresh
+        ;;
+    SessionEnd)
         mark_refresh
         ;;
 esac

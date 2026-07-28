@@ -58,6 +58,7 @@ assert_eq() {
 echo "working" > "$STATUS_DIR/repo.status"
 echo "done" > "$PANE_DIR/repo_%1.status"
 echo "claude" > "$PANE_DIR/repo_%1.agent"
+printf 'claude\nclaude-session-1\n' > "$PANE_DIR/repo_%1.conversation"
 echo "working" > "$PANE_DIR/repo_%2.status"
 echo "codex" > "$PANE_DIR/repo_%2.agent"
 
@@ -65,7 +66,8 @@ PATH="$FAKE_BIN:$PATH" \
 HOME="$TEST_HOME" \
 "$REPO_DIR/scripts/close-target.sh" "repo:%1" "P"
 
-if [ -e "$PANE_DIR/repo_%1.status" ] || [ -e "$PANE_DIR/repo_%1.agent" ]; then
+if [ -e "$PANE_DIR/repo_%1.status" ] || [ -e "$PANE_DIR/repo_%1.agent" ] || \
+   [ -e "$PANE_DIR/repo_%1.conversation" ]; then
     echo "Assertion failed: closed pane metadata should be removed" >&2
     exit 1
 fi

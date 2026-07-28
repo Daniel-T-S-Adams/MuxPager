@@ -5,7 +5,7 @@ the local tmux UI and the private Telegram topic group.
 
 ```text
 Codex hooks ──┐
-              ├─► pane status/prompt/message cache ─► process validation
+              ├─► pane status/conversation/prompt/message cache ─► process validation
 Claude hooks ─┘                                         │
                                                        ├─► permanent sidebar
                                                        ├─► fzf switcher
@@ -24,35 +24,46 @@ hook state is accepted only when a live Codex or Claude process still exists in
 that pane's process tree. Running, sleeping, and I/O-waiting processes remain
 live; stopped, zombie, dead, and exited processes do not.
 
-An agent's Telegram identity is:
+Codex and Claude expose a stable `session_id` in their hook payloads. MuxPager's
+Telegram identity is therefore:
 
 ```text
-tmux session + window index + pane index + agent type
+agent type + agent session_id
 ```
 
-The temporary tmux pane ID is deliberately excluded. Recreating the same
-logical pane therefore reopens the existing topic and retains its Telegram
-history. Starting an agent in another position creates a distinct topic.
+Tmux session, window, pane index, and pane ID are routing metadata only. Resuming
+the same agent conversation anywhere reopens its existing topic and retains its
+Telegram history. Starting a new conversation in the same pane creates a new
+topic. If the same conversation is live in multiple panes simultaneously,
+Telegram delivery pauses rather than choosing an ambiguous target.
+
+An open topic created by an older MuxPager release is migrated once from its
+position-based key when that live agent next reports a conversation ID. Closed
+legacy topics are left as history and are never attached to a new conversation.
 
 ## Stable integration boundary
 
 `bin/muxpager-agent-list` is the supported machine-readable boundary between the
-core and external interfaces. It emits seven tab-separated fields:
+core and external interfaces. It emits eight tab-separated fields:
 
 ```text
-pane_id  session  window_index  window_name  pane_index  agent  status
+pane_id  session  window_index  window_name  pane_index  agent  status  conversation_id
 ```
 
 Only validated, live agent panes appear. Consumers should not infer agent
 presence from window names, cached hook files, or foreground process names
-alone.
+alone. The final field may be empty briefly for a process started before its
+updated hook configuration loaded; the Telegram bridge pauses Codex/Claude
+routing until it is populated.
 
 The Telegram bridge reads the exact cached final message and queued local
-prompts from:
+prompts from conversation-scoped paths (the directory name is a SHA-256 digest
+of agent type and session ID):
 
 ```text
-~/.cache/tmux-agent-status/panes/<session>_<pane-id>.last-message
-~/.cache/tmux-agent-status/panes/<session>_<pane-id>.prompts/*.prompt
+~/.cache/tmux-agent-status/panes/conversations/<digest>.last-message
+~/.cache/tmux-agent-status/panes/conversations/<digest>.prompts/*.prompt
+~/.cache/tmux-agent-status/panes/<session>_<pane-id>.conversation
 ```
 
 ## Runtime state
@@ -80,12 +91,13 @@ the hook consumes that marker instead of queueing a duplicate.
 
 The bridge polls Telegram and reconciles tmux agent panes every few seconds.
 
-1. A newly detected agent gets a topic.
+1. A newly detected agent conversation gets a topic after its hook reports a
+   session ID.
 2. A working agent remains mapped for the lifetime of its process, including
    time spent waiting for a child process.
 3. An exited agent enters a configurable grace period.
 4. After the grace period, the topic is closed rather than deleted.
-5. The same logical agent returning reopens the old topic.
+5. The same conversation returning, in any pane, reopens the old topic.
 6. An incoming message is delivered only after the live pane mapping and
    `pane_dead` status are revalidated.
 

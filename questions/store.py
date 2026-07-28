@@ -37,7 +37,15 @@ def default_choice_dir() -> Path:
     return state_home / "tmux-telegram-bridge" / "choices"
 
 
-def topic_key(session: str, window_index: str, pane_index: str, agent: str) -> str:
+def topic_key(
+    session: str,
+    window_index: str,
+    pane_index: str,
+    agent: str,
+    conversation_id: str = "",
+) -> str:
+    if conversation_id:
+        return "\x1f".join(("conversation", agent, conversation_id))
     return "\x1f".join((session, window_index, pane_index, agent))
 
 
@@ -161,6 +169,7 @@ class ChoiceStore:
         window_index: str,
         pane_index: str,
         agent: str,
+        conversation_id: str,
         question: str,
         options: Any,
         now: float | None = None,
@@ -176,9 +185,15 @@ class ChoiceStore:
             raise ChoiceStoreError("choice requests require a live tmux pane")
         if agent not in {"codex", "claude"}:
             raise ChoiceStoreError("choice requests support only Codex and Claude")
+        if not conversation_id:
+            raise ChoiceStoreError(
+                "the agent has not reported its conversation identity yet"
+            )
         normalized_options = validate_options(options)
         created_at = float(now if now is not None else time.time())
-        key = topic_key(session, window_index, pane_index, agent)
+        key = topic_key(
+            session, window_index, pane_index, agent, conversation_id
+        )
 
         with self._locked():
             for existing in self._all_locked():
@@ -200,6 +215,7 @@ class ChoiceStore:
                 "window_index": window_index,
                 "pane_index": pane_index,
                 "agent": agent,
+                "conversation_id": conversation_id,
                 "topic_key": key,
                 "question": question,
                 "options": normalized_options,
@@ -237,7 +253,11 @@ class ChoiceStore:
         return max(matches, key=lambda payload: float(payload.get("created_at", 0)))
 
     def mark_local_answer(
-        self, pane_id: str, agent: str | None = None, now: float | None = None
+        self,
+        pane_id: str,
+        agent: str | None = None,
+        conversation_id: str | None = None,
+        now: float | None = None,
     ) -> list[dict[str, Any]]:
         finished_at = float(now if now is not None else time.time())
         changed: list[dict[str, Any]] = []
@@ -246,6 +266,11 @@ class ChoiceStore:
                 if payload.get("pane_id") != pane_id:
                     continue
                 if agent is not None and payload.get("agent") != agent:
+                    continue
+                if (
+                    conversation_id is not None
+                    and payload.get("conversation_id") != conversation_id
+                ):
                     continue
                 state = payload.get("state")
                 if state not in {"pending", "published", "delivering"}:

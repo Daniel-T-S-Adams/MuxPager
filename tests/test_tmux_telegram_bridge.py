@@ -23,7 +23,7 @@ SPEC.loader.exec_module(bridge)
 class TelegramBridgeTests(unittest.TestCase):
     def test_parse_agent_rows_rejects_shells_and_invalid_rows(self) -> None:
         output = (
-            "%2\ttr\t0\tcodex\t1\tcodex\tdone\n"
+            "%2\ttr\t0\tcodex\t1\tcodex\tdone\tcodex-session-123\n"
             "%3\tplain\t0\tbash\t0\tbash\tnoagent\n"
             "broken\n"
         )
@@ -31,7 +31,8 @@ class TelegramBridgeTests(unittest.TestCase):
         self.assertEqual(1, len(panes))
         self.assertEqual("%2", panes[0].pane_id)
         self.assertEqual("tr › codex › codex #1", panes[0].label)
-        self.assertEqual("tr · codex #1", panes[0].topic_name)
+        self.assertEqual("codex-session-123", panes[0].conversation_id)
+        self.assertEqual("tr · codex · codex-se", panes[0].topic_name)
 
     def test_topic_name_ignores_tmux_copy_mode_window_name(self) -> None:
         pane = bridge.AgentPane(
@@ -57,6 +58,34 @@ class TelegramBridgeTests(unittest.TestCase):
             self.assertEqual("Exact final response.", text)
             self.assertEqual("Last agent message", source)
             capture.assert_not_called()
+
+    def test_cached_messages_are_scoped_to_the_agent_conversation(self) -> None:
+        first = bridge.AgentPane(
+            "%2", "tr", "0", "codex", "1", "codex", "done", "session-one"
+        )
+        second = bridge.AgentPane(
+            "%2", "tr", "0", "codex", "1", "codex", "done", "session-two"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            client = bridge.TmuxClient(REPO_ROOT)
+            client.message_dir = Path(temporary)
+            client._message_path(first).parent.mkdir(parents=True)
+            client._message_path(first).write_text(
+                "First conversation response.\n", encoding="utf-8"
+            )
+            client._message_path(second).write_text(
+                "Second conversation response.\n", encoding="utf-8"
+            )
+
+            self.assertNotEqual(client._message_path(first), client._message_path(second))
+            self.assertEqual(
+                ("First conversation response.", "Last agent message"),
+                client.last_output(first),
+            )
+            self.assertEqual(
+                ("Second conversation response.", "Last agent message"),
+                client.last_output(second),
+            )
 
     def test_send_message_uses_a_private_buffer_without_a_shell(self) -> None:
         client = bridge.TmuxClient(REPO_ROOT)
@@ -190,7 +219,14 @@ class ForumTopicBridgeTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.pane = bridge.AgentPane(
-            "%2", "tr", "0", "codex", "1", "codex", "working"
+            "%2",
+            "tr",
+            "0",
+            "codex",
+            "1",
+            "codex",
+            "working",
+            "codex-session-123",
         )
         self.telegram = FakeTelegram()
         self.tmux = FakeTmux([self.pane])
@@ -226,6 +262,7 @@ class ForumTopicBridgeTests(unittest.TestCase):
             window_index=self.pane.window_index,
             pane_index=self.pane.pane_index,
             agent=self.pane.agent,
+            conversation_id=self.pane.conversation_id,
             question="Which environment should I use?",
             options=[
                 {"label": "Staging", "description": "Run safely first"},
@@ -259,7 +296,7 @@ class ForumTopicBridgeTests(unittest.TestCase):
             for method, params in self.telegram.calls
             if method == "createForumTopic"
         )
-        self.assertEqual("tr · codex #1", create["name"])
+        self.assertEqual("tr · codex · codex-se", create["name"])
 
     def test_setup_rejects_a_group_with_other_members(self) -> None:
         self.telegram.member_count = 3
@@ -346,7 +383,7 @@ class ForumTopicBridgeTests(unittest.TestCase):
         thread_id = self.configure()
         self.telegram.calls.clear()
         done = bridge.AgentPane(
-            "%2", "tr", "0", "codex", "1", "codex", "done"
+            "%2", "tr", "0", "codex", "1", "codex", "done", "codex-session-123"
         )
         self.tmux.panes = [done]
         self.tmux.versions[done.topic_key] = "v2"
@@ -367,7 +404,14 @@ class ForumTopicBridgeTests(unittest.TestCase):
         thread_id = self.configure()
         self.telegram.calls.clear()
         replacement = bridge.AgentPane(
-            "%99", "tr", "0", "codex", "1", "codex", "working"
+            "%99",
+            "tr",
+            "0",
+            "codex",
+            "1",
+            "codex",
+            "working",
+            "codex-session-123",
         )
         self.tmux.panes = [replacement]
 
@@ -378,6 +422,162 @@ class ForumTopicBridgeTests(unittest.TestCase):
         self.assertEqual("%99", record["pane_id"])
         self.assertNotIn(
             "createForumTopic", [method for method, _ in self.telegram.calls]
+        )
+
+    def test_new_conversation_in_the_same_tmux_slot_gets_a_new_topic(self) -> None:
+        first_thread_id = self.configure()
+        self.telegram.calls.clear()
+        replacement = bridge.AgentPane(
+            "%2",
+            "tr",
+            "0",
+            "codex",
+            "1",
+            "codex",
+            "working",
+            "codex-session-999",
+        )
+        self.tmux.panes = [replacement]
+
+        self.instance._sync_topics()
+
+        replacement_record = self.instance.state["topics"][replacement.topic_key]
+        self.assertNotEqual(first_thread_id, replacement_record["thread_id"])
+        self.assertTrue(self.instance.state["topics"][self.pane.topic_key]["closed"])
+        self.assertEqual(
+            1,
+            sum(
+                method == "createForumTopic" for method, _ in self.telegram.calls
+            ),
+        )
+
+    def test_open_legacy_topic_is_migrated_to_conversation_identity(self) -> None:
+        thread_id = self.configure()
+        record = self.instance.state["topics"].pop(self.pane.topic_key)
+        self.instance.state["topics"][self.pane.legacy_topic_key] = record
+        self.instance.state["agent_status"] = {
+            self.pane.legacy_topic_key: "working"
+        }
+        self.instance._save_state()
+        self.telegram.calls.clear()
+
+        self.instance._sync_topics()
+
+        self.assertNotIn(self.pane.legacy_topic_key, self.instance.state["topics"])
+        migrated = self.instance.state["topics"][self.pane.topic_key]
+        self.assertEqual(thread_id, migrated["thread_id"])
+        self.assertEqual(self.pane.conversation_id, migrated["conversation_id"])
+        self.assertNotIn(
+            "createForumTopic", [method for method, _ in self.telegram.calls]
+        )
+
+    def test_missing_conversation_identity_protects_legacy_topic_and_pauses_delivery(
+        self,
+    ) -> None:
+        thread_id = self.configure()
+        record = self.instance.state["topics"].pop(self.pane.topic_key)
+        self.instance.state["topics"][self.pane.legacy_topic_key] = record
+        pending = bridge.AgentPane(
+            "%2", "tr", "0", "codex", "1", "codex", "working"
+        )
+        self.tmux.panes = [pending]
+        self.telegram.calls.clear()
+
+        count = self.instance._sync_topics()
+
+        self.assertEqual(0, count)
+        self.assertFalse(
+            self.instance.state["topics"][pending.legacy_topic_key]["closed"]
+        )
+        self.assertNotIn(
+            "createForumTopic", [method for method, _ in self.telegram.calls]
+        )
+
+        self.instance._handle_message(
+            {
+                **self.control_message,
+                "message_id": 12,
+                "message_thread_id": thread_id,
+                "text": "Do not guess the target",
+            }
+        )
+
+        self.assertEqual([], self.tmux.sent)
+        warning = [
+            params["text"]
+            for method, params in self.telegram.calls
+            if method == "sendMessage"
+        ][-1]
+        self.assertIn("has not reported its conversation identity", warning)
+
+    def test_duplicate_live_conversation_pauses_message_routing(self) -> None:
+        thread_id = self.configure()
+        duplicate = bridge.AgentPane(
+            "%99",
+            "other",
+            "2",
+            "claude",
+            "0",
+            "codex",
+            "done",
+            self.pane.conversation_id,
+        )
+        self.tmux.panes = [self.pane, duplicate]
+        self.telegram.calls.clear()
+
+        self.instance._handle_message(
+            {
+                **self.control_message,
+                "message_id": 13,
+                "message_thread_id": thread_id,
+                "text": "Do not send ambiguously",
+            }
+        )
+
+        self.assertEqual([], self.tmux.sent)
+        warning = next(
+            params["text"]
+            for method, params in self.telegram.calls
+            if method == "sendMessage"
+        )
+        self.assertIn("open in multiple tmux panes", warning)
+
+    def test_duplicate_live_conversation_preserves_choice_without_delivering(
+        self,
+    ) -> None:
+        thread_id = self.configure()
+        choice = self.create_choice()
+        self.instance._sync_topics()
+        published = self.instance.choice_store.get(choice["id"])
+        duplicate = bridge.AgentPane(
+            "%99",
+            "other",
+            "2",
+            "codex",
+            "0",
+            "codex",
+            "done",
+            self.pane.conversation_id,
+        )
+        self.tmux.panes = [
+            bridge.AgentPane(
+                "%2",
+                "tr",
+                "0",
+                "codex",
+                "1",
+                "codex",
+                "done",
+                self.pane.conversation_id,
+            ),
+            duplicate,
+        ]
+
+        self.instance._handle_callback_query(self.callback(published, thread_id))
+
+        self.assertEqual([], self.tmux.sent)
+        self.assertEqual(
+            "selected", self.instance.choice_store.get(choice["id"])["state"]
         )
 
     def test_missing_agent_topic_is_closed_not_deleted(self) -> None:
@@ -438,7 +638,7 @@ class ForumTopicBridgeTests(unittest.TestCase):
         published = self.instance.choice_store.get(choice["id"])
         self.tmux.panes = [
             bridge.AgentPane(
-                "%2", "tr", "0", "codex", "1", "codex", "done"
+                "%2", "tr", "0", "codex", "1", "codex", "done", "codex-session-123"
             )
         ]
         self.telegram.calls.clear()
@@ -471,7 +671,7 @@ class ForumTopicBridgeTests(unittest.TestCase):
 
         self.tmux.panes = [
             bridge.AgentPane(
-                "%2", "tr", "0", "codex", "1", "codex", "done"
+                "%2", "tr", "0", "codex", "1", "codex", "done", "codex-session-123"
             )
         ]
         self.instance._sync_topics()
@@ -489,7 +689,7 @@ class ForumTopicBridgeTests(unittest.TestCase):
         published = self.instance.choice_store.get(choice["id"])
         self.tmux.panes = [
             bridge.AgentPane(
-                "%2", "tr", "0", "codex", "1", "codex", "done"
+                "%2", "tr", "0", "codex", "1", "codex", "done", "codex-session-123"
             )
         ]
 
@@ -532,7 +732,7 @@ class ForumTopicBridgeTests(unittest.TestCase):
         self.create_choice()
         self.telegram.calls.clear()
         done = bridge.AgentPane(
-            "%2", "tr", "0", "codex", "1", "codex", "done"
+            "%2", "tr", "0", "codex", "1", "codex", "done", "codex-session-123"
         )
         self.tmux.panes = [done]
         self.tmux.versions[done.topic_key] = "v2"
@@ -558,6 +758,51 @@ class ForumTopicBridgeTests(unittest.TestCase):
         self.assertEqual(
             "expired", self.instance.choice_store.get(choice["id"])["state"]
         )
+
+    def test_active_choice_follows_its_conversation_to_a_new_pane(self) -> None:
+        self.configure()
+        choice = self.create_choice()
+        replacement = bridge.AgentPane(
+            "%99",
+            "other",
+            "2",
+            "codex",
+            "0",
+            "codex",
+            "working",
+            self.pane.conversation_id,
+        )
+        self.tmux.panes = [replacement]
+
+        self.instance._sync_topics()
+
+        moved = self.instance.choice_store.get(choice["id"])
+        self.assertEqual("published", moved["state"])
+        self.assertEqual("%99", moved["pane_id"])
+        self.assertEqual("other", moved["session"])
+        self.assertEqual(replacement.topic_key, moved["topic_key"])
+
+    def test_legacy_choice_is_migrated_to_its_live_conversation(self) -> None:
+        self.configure()
+        choice = self.create_choice()
+        self.instance.choice_store.update(
+            choice["id"],
+            lambda current: {
+                key: value
+                for key, value in {
+                    **current,
+                    "topic_key": self.pane.legacy_topic_key,
+                }.items()
+                if key != "conversation_id"
+            },
+        )
+
+        self.instance._sync_topics()
+
+        migrated = self.instance.choice_store.get(choice["id"])
+        self.assertEqual("published", migrated["state"])
+        self.assertEqual(self.pane.topic_key, migrated["topic_key"])
+        self.assertEqual(self.pane.conversation_id, migrated["conversation_id"])
 
 
 if __name__ == "__main__":

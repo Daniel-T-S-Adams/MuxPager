@@ -42,9 +42,10 @@ EOF
 chmod +x "$FAKE_BIN/ps"
 
 echo "done" > "$STATUS_DIR/panes/agents_%1.status"
+printf 'codex\ncodex-session-123\n' > "$STATUS_DIR/panes/agents_%1.conversation"
 
 actual=$(PATH="$FAKE_BIN:$PATH" HOME="$TEST_HOME" bash "$REPO_DIR/scripts/list-agent-panes.sh")
-expected=$'%1\tagents\t0\tcodex\t0\tcodex\tdone'
+expected=$'%1\tagents\t0\tcodex\t0\tcodex\tdone\tcodex-session-123'
 if [ "$actual" != "$expected" ]; then
     echo "Assertion failed: Telegram bridge agent listing should contain only the live agent pane" >&2
     echo "Expected: $expected" >&2
