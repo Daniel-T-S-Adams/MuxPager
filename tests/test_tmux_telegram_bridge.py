@@ -90,7 +90,7 @@ class TelegramBridgeTests(unittest.TestCase):
     def test_send_message_uses_a_private_buffer_without_a_shell(self) -> None:
         client = bridge.TmuxClient(REPO_ROOT)
         pane = bridge.AgentPane(
-            "%2", "tr", "0", "codex", "1", "codex", "done"
+            "%2", "tr", "0", "codex", "1", "codex", "done", "session-one"
         )
         calls: list[list[str]] = []
         loaded_text: list[str] = []
@@ -106,8 +106,9 @@ class TelegramBridgeTests(unittest.TestCase):
         dangerous_text = "$(touch /tmp/should-not-run); `id`; hello"
         with tempfile.TemporaryDirectory() as temporary:
             client.message_dir = Path(temporary)
-            with mock.patch.object(bridge.subprocess, "run", side_effect=fake_run):
-                client.send_message(pane, dangerous_text)
+            with mock.patch.object(client, "agents", return_value=[pane]):
+                with mock.patch.object(bridge.subprocess, "run", side_effect=fake_run):
+                    client.send_message(pane, dangerous_text)
             marker = json.loads(
                 (client.message_dir / "tr_%2.telegram-prompt").read_text(
                     encoding="utf-8"
@@ -509,6 +510,54 @@ class ForumTopicBridgeTests(unittest.TestCase):
             if method == "sendMessage"
         ][-1]
         self.assertIn("has not reported its conversation identity", warning)
+
+    def test_identity_pending_preserves_a_legacy_choice_for_migration(self) -> None:
+        self.configure()
+        choice = self.create_choice()
+        self.instance.choice_store.update(
+            choice["id"],
+            lambda current: {
+                key: value
+                for key, value in {
+                    **current,
+                    "topic_key": self.pane.legacy_topic_key,
+                }.items()
+                if key != "conversation_id"
+            },
+        )
+        self.tmux.panes = [
+            bridge.AgentPane(
+                "%2", "tr", "0", "codex", "1", "codex", "done"
+            )
+        ]
+
+        self.instance._sync_topics()
+
+        preserved = self.instance.choice_store.get(choice["id"])
+        self.assertEqual("pending", preserved["state"])
+        self.assertEqual(self.pane.legacy_topic_key, preserved["topic_key"])
+
+    def test_send_rejects_if_conversation_moves_during_final_revalidation(
+        self,
+    ) -> None:
+        client = bridge.TmuxClient(REPO_ROOT)
+        moved = bridge.AgentPane(
+            "%99",
+            self.pane.session,
+            self.pane.window_index,
+            self.pane.window_name,
+            self.pane.pane_index,
+            self.pane.agent,
+            self.pane.status,
+            self.pane.conversation_id,
+        )
+        result = subprocess.CompletedProcess(
+            ["tmux"], 0, stdout="0\t%2\n", stderr=""
+        )
+        with mock.patch.object(bridge.subprocess, "run", return_value=result):
+            with mock.patch.object(client, "agents", return_value=[moved]):
+                with self.assertRaises(bridge.TmuxError):
+                    client.send_message(self.pane, "Do not send after a move")
 
     def test_duplicate_live_conversation_pauses_message_routing(self) -> None:
         thread_id = self.configure()

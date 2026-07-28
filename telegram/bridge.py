@@ -365,7 +365,7 @@ class TmuxClient:
             return captured, "Latest pane output"
         return "No visible output yet.", "Latest pane output"
 
-    def _validate_target(self, pane_id: str) -> None:
+    def _validate_target(self, pane: AgentPane) -> None:
         try:
             result = subprocess.run(
                 [
@@ -373,7 +373,7 @@ class TmuxClient:
                     "display-message",
                     "-p",
                     "-t",
-                    pane_id,
+                    pane.pane_id,
                     "#{pane_dead}\t#{pane_id}",
                 ],
                 check=True,
@@ -382,16 +382,28 @@ class TmuxClient:
                 timeout=5,
             )
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            raise TmuxError(f"Pane {pane_id} is no longer available") from exc
-        if result.stdout.strip() != f"0\t{pane_id}":
-            raise TmuxError(f"Pane {pane_id} is no longer a live target")
+            raise TmuxError(f"Pane {pane.pane_id} is no longer available") from exc
+        if result.stdout.strip() != f"0\t{pane.pane_id}":
+            raise TmuxError(f"Pane {pane.pane_id} is no longer a live target")
+
+        # Pane IDs and positions can be reused. Resolve the process tree again
+        # immediately before paste and require one exact conversation match.
+        matches = [
+            candidate
+            for candidate in self.agents()
+            if candidate.identity_ready and candidate.topic_key == pane.topic_key
+        ]
+        if len(matches) != 1 or matches[0].pane_id != pane.pane_id:
+            raise TmuxError(
+                "The target conversation moved or became ambiguous before delivery"
+            )
 
     def send_message(self, pane: AgentPane, message: str) -> None:
         if not message.strip():
             raise TmuxError("Refusing to send an empty message")
         if len(message) > MAX_INPUT_LENGTH:
             raise TmuxError(f"Message is longer than {MAX_INPUT_LENGTH} characters")
-        self._validate_target(pane.pane_id)
+        self._validate_target(pane)
         marker_path = self._write_telegram_prompt_marker(pane, message)
 
         buffer_name = f"telegram-{os.getpid()}-{time.time_ns()}"
@@ -1163,6 +1175,9 @@ class Bridge:
 
     def _sync_choices(self, panes: list[AgentPane]) -> None:
         ready_panes = [pane for pane in panes if pane.identity_ready]
+        identity_pending_keys = {
+            pane.legacy_topic_key for pane in panes if not pane.identity_ready
+        }
         key_counts: dict[str, int] = {}
         for pane in ready_panes:
             key_counts[pane.topic_key] = key_counts.get(pane.topic_key, 0) + 1
@@ -1180,6 +1195,8 @@ class Bridge:
                 self._finalize_choice_message(choice)
                 continue
             choice_key = str(choice.get("topic_key") or "")
+            if choice_key in identity_pending_keys:
+                continue
             if choice_key in ambiguous_keys:
                 continue
             pane = pane_by_key.get(choice_key)

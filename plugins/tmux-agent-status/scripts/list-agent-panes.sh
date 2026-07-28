@@ -31,6 +31,20 @@ while IFS=$'\t' read -r pane_id session window_index window_name pane_index pane
         IFS= read -r cached_agent < "$identity_file" || cached_agent=""
         conversation_id=$(sed -n '2p' "$identity_file" 2>/dev/null || true)
         [ "$cached_agent" = "$agent" ] || conversation_id=""
+
+        # A crashed agent may not emit SessionEnd before another process of the
+        # same type reuses its pane. On Linux, suppress an identity older than
+        # the detected agent process until SessionStart writes the new one.
+        proc_root="${MUXPAGER_PROC_ROOT:-/proc}"
+        if [ -n "$conversation_id" ] && [ -d "$proc_root/$match_pid" ]; then
+            identity_mtime=$(stat -c %Y "$identity_file" 2>/dev/null || true)
+            process_started=$(stat -c %Y "$proc_root/$match_pid" 2>/dev/null || true)
+            if [[ "$identity_mtime" =~ ^[0-9]+$ ]] && \
+               [[ "$process_started" =~ ^[0-9]+$ ]] && \
+               [ "$identity_mtime" -lt "$process_started" ]; then
+                conversation_id=""
+            fi
+        fi
     fi
 
     case "$status" in
