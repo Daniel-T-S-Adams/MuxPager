@@ -105,7 +105,35 @@ The Control topic provides:
 
 - `/sync` — reconcile all live agent topics now.
 - `/status` — list current agents and states.
+- `/new [SEARCH]` — find a repository and start a new agent conversation.
 - `/help` — display the short command guide.
+
+## Starting an agent from Telegram
+
+Send `/new` in Control to list up to eight Git working trees beneath the
+configured repository root. On this server the default root is `/root`. Add
+case-insensitive search terms to narrow the list, for example:
+
+```text
+/new mux pager
+```
+
+Tap a repository and then **Codex** or **Claude**. The bridge creates a detached
+tmux session (or a new window in a matching existing session), starts a fresh
+agent process with that repository as its working directory, and updates the
+picker while it waits. The new conversation gets its normal Telegram topic as
+soon as the agent reports its stable conversation ID.
+
+Only installed agent CLIs are offered. Picker buttons expire after 15 minutes.
+If startup takes more than a minute, inspect the tmux target shown in Control;
+the CLI may be waiting for a local login or trust prompt. A startup is marked
+failed after ten minutes without a conversation identity.
+
+Set `TMUX_TELEGRAM_REPO_ROOT` in
+`~/.config/tmux-telegram-bridge/env` and restart the service to use a different
+root. Discovery includes directories with a `.git` directory or file, skips
+common dependency/cache trees, never follows directory symlinks, and does not
+accept arbitrary paths supplied through Telegram.
 
 ## Lifecycle
 

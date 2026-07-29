@@ -7,6 +7,9 @@ All notable changes to MuxPager are documented here. The project uses
 
 ### Added
 
+- `/new [SEARCH]` in Telegram Control, with a bounded repository picker rooted
+  at the service user's home (`/root` on this server), Codex/Claude selection,
+  detached tmux startup, and automatic handoff to the new conversation topic.
 - Single-choice questions from Codex or Claude appear as inline buttons in the
   matching Telegram topic, with durable first-answer-wins delivery back to the
   exact agent pane.

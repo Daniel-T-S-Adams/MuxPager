@@ -45,6 +45,8 @@ tmux                                        Telegram
 - Telegram notifications containing the agent's exact final response.
 - Telegram buttons for a Codex or Claude question that has one answer chosen
   from a short list; the selected answer returns to the correct agent pane.
+- A searchable Telegram repository picker that can start a fresh Codex or
+  Claude conversation in detached tmux without first opening a laptop.
 - Topics that close when an agent exits, retain their history, and reopen when
   the same logical agent returns.
 - Self-contained tmux setup: every required tmux component ships in this
@@ -198,6 +200,9 @@ In the Telegram `Control` topic:
 
 - `/sync` reconciles topics with live tmux agents immediately.
 - `/status` lists live agents and their states.
+- `/new [SEARCH]` searches Git repositories beneath the configured root
+  (`/root` on this server), then starts a new Codex or Claude conversation in
+  the selected repository and opens its topic.
 - `/help` displays the bot command guide.
 
 ## How it works

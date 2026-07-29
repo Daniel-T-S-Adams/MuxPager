@@ -80,6 +80,23 @@ active. Native single-choice tools are redirected to MuxPager; if an agent
 still opens a terminal picker, mention the `MuxPager ask_choice` tool explicitly
 and inspect its `/hooks` view for the managed PreToolUse hook.
 
+## `/new` cannot find a repository
+
+The picker lists only Git working trees beneath `TMUX_TELEGRAM_REPO_ROOT`, which
+defaults to the service user's home directory (`/root` on this server). Confirm
+the directory contains a `.git` directory or file, then narrow by any part of
+its relative path:
+
+```text
+/new repository-name
+```
+
+Common cache, dependency, build, and virtual-environment directories are not
+scanned. If you changed the root in
+`~/.config/tmux-telegram-bridge/env`, restart the service. If startup remains at
+the waiting message, attach to the displayed tmux target and complete any agent
+login or repository-trust prompt.
+
 ## Topic did not reopen
 
 The stable identity combines agent type with the Codex or Claude session ID.

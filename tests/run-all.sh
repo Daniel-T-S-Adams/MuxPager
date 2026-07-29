@@ -9,6 +9,7 @@ python3 -m py_compile \
     "$PROJECT_ROOT/questions/mcp_server.py" \
     "$PROJECT_ROOT/questions/mark_local_answer.py" \
     "$PROJECT_ROOT/telegram/bridge.py" \
+    "$PROJECT_ROOT/telegram/repositories.py" \
     "$PROJECT_ROOT/scripts/manage-agent-mcp.py" \
     "$PROJECT_ROOT/scripts/manage-user-config.py" \
     "$PROJECT_ROOT/tests/test_no_secrets.py"
@@ -16,6 +17,7 @@ python3 "$PROJECT_ROOT/tests/test_no_secrets.py"
 python3 -m unittest -v "$PROJECT_ROOT/tests/test_choice_store.py"
 python3 -m unittest -v "$PROJECT_ROOT/tests/test_manage_agent_mcp.py"
 python3 -m unittest -v "$PROJECT_ROOT/tests/test_muxpager_choice_mcp.py"
+python3 -m unittest -v "$PROJECT_ROOT/tests/test_repository_catalog.py"
 python3 -m unittest -v "$PROJECT_ROOT/tests/test_tmux_telegram_bridge.py"
 
 bash -n \

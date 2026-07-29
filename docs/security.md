@@ -43,6 +43,16 @@ or Telegram usernames as identity.
 - Choice questions and selections are stored in mode-`0600` files. A selected
   answer uses the same literal tmux-buffer delivery path as an ordinary
   Telegram message.
+- `/new` discovers only Git working trees beneath the configured repository
+  root. Discovery does not follow directory symlinks, and the resolved path is
+  checked beneath that root again when each button is pressed.
+- Repository-picker callbacks contain a random request ID and bounded index,
+  not a client-supplied path. They are bound to the configured user, group,
+  topic, and Telegram message and expire after 15 minutes.
+- Agent launch is restricted to installed Codex and Claude executables selected
+  by the bridge. The absolute executable path is typed literally into a new
+  detached tmux pane; neither repository names nor Telegram text are evaluated
+  by a shell command.
 
 An agent may itself choose to execute a command after reading a Telegram
 message. Telegram therefore has the same authority as typing a prompt directly
@@ -67,8 +77,8 @@ The token and allowed user ID live in:
 ~/.config/tmux-telegram-bridge/env
 ```
 
-The installer creates it with mode `0600`. Group and topic IDs live in a
-separate mode-`0600` state file under `~/.local/state`.
+The installer creates it with mode `0600`. Group/topic IDs and launch picker
+state live in a separate mode-`0600` state file under `~/.local/state`.
 
 Never commit either file or paste a token into an issue, shell command argument,
 or chat. If a token is exposed:

@@ -124,6 +124,43 @@ class TelegramBridgeTests(unittest.TestCase):
         self.assertIn("paste-buffer", [call[1] for call in calls])
         self.assertEqual("send-keys", calls[-1][1])
 
+    def test_launch_agent_creates_a_detached_tmux_session_in_repository(self) -> None:
+        client = bridge.TmuxClient(REPO_ROOT)
+        calls: list[list[str]] = []
+
+        def fake_run(args, **kwargs):
+            calls.append(list(args))
+            if args[1] == "new-session":
+                return subprocess.CompletedProcess(
+                    args, 0, stdout="%50\tmuxpager\t0\n", stderr=""
+                )
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with mock.patch.object(
+            client, "_agent_executable", return_value="/opt/Agent Tools/codex"
+        ):
+            with mock.patch.object(
+                client, "_launch_session_name", return_value=("muxpager", False)
+            ):
+                with mock.patch.object(bridge.subprocess, "run", side_effect=fake_run):
+                    target = client.launch_agent(REPO_ROOT, "codex")
+
+        self.assertEqual(bridge.LaunchTarget("%50", "muxpager", "0"), target)
+        self.assertIn("-d", calls[0])
+        self.assertEqual(str(REPO_ROOT), calls[0][calls[0].index("-c") + 1])
+        self.assertEqual(
+            [
+                "tmux",
+                "send-keys",
+                "-t",
+                "%50",
+                "-l",
+                "'/opt/Agent Tools/codex'",
+            ],
+            calls[1],
+        )
+        self.assertFalse(any(call == ["bash", "-c"] for call in calls))
+
     def test_split_utf16_preserves_complete_unicode_text(self) -> None:
         original = "a🙂b🙂c"
 
@@ -187,6 +224,8 @@ class FakeTmux:
         }
         self.prompts = {pane.topic_key: [] for pane in panes}
         self.sent: list[tuple[str, str]] = []
+        self.launches: list[tuple[Path, str]] = []
+        self.launched_panes: set[str] = set()
 
     def agents(self):
         return list(self.panes)
@@ -214,6 +253,19 @@ class FakeTmux:
     def send_message(self, pane, text):
         self.sent.append((pane.pane_id, text))
 
+    def available_agents(self):
+        return ["codex", "claude"]
+
+    def launch_agent(self, repository, agent):
+        self.launches.append((Path(repository), agent))
+        self.launched_panes.add("%50")
+        return bridge.LaunchTarget("%50", repository.name, "1")
+
+    def pane_exists(self, pane_id):
+        return pane_id in self.launched_panes or any(
+            pane.pane_id == pane_id for pane in self.panes
+        )
+
 
 class ForumTopicBridgeTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -231,12 +283,17 @@ class ForumTopicBridgeTests(unittest.TestCase):
         )
         self.telegram = FakeTelegram()
         self.tmux = FakeTmux([self.pane])
+        self.repository_root = Path(self.temporary.name) / "repositories"
+        self.repository = self.repository_root / "MuxPager"
+        (self.repository / ".git").mkdir(parents=True)
+        (self.repository_root / "another-project" / ".git").mkdir(parents=True)
         self.instance = bridge.Bridge(
             self.telegram,
             self.tmux,
             allowed_user_id=42,
             state_path=Path(self.temporary.name) / "state.json",
             close_after=0,
+            repository_root=self.repository_root,
         )
         self.control_message = {
             "message_id": 1,
@@ -255,6 +312,152 @@ class ForumTopicBridgeTests(unittest.TestCase):
         self.instance._handle_message(self.control_message)
         record = self.instance.state["topics"][self.pane.topic_key]
         return record["thread_id"]
+
+    def launch_callback(self, request, data, user_id=42):
+        return {
+            "id": "launch-callback",
+            "from": {"id": user_id},
+            "data": data,
+            "message": {
+                "message_id": request["message_id"],
+                "message_thread_id": request["thread_id"],
+                "chat": {"id": -100123, "type": "supergroup"},
+            },
+        }
+
+    def start_launch(self, query="mux"):
+        self.configure()
+        self.telegram.calls.clear()
+        self.instance._handle_message(
+            {
+                **self.control_message,
+                "message_id": 20,
+                "text": f"/new {query}".rstrip(),
+            }
+        )
+        request_id, request = next(
+            iter(self.instance.state["launch_requests"].items())
+        )
+        return request_id, request
+
+    def test_new_command_searches_repositories_and_shows_picker(self) -> None:
+        request_id, request = self.start_launch()
+
+        self.assertEqual("choosing_repo", request["state"])
+        picker = next(
+            params
+            for method, params in self.telegram.calls
+            if method == "sendMessage" and "reply_markup" in params
+        )
+        self.assertIn("matching “mux”", picker["text"])
+        button = picker["reply_markup"]["inline_keyboard"][0][0]
+        self.assertEqual("MuxPager", button["text"])
+        self.assertEqual(f"nl:r:{request_id}:0", button["callback_data"])
+
+    def test_repository_and_agent_buttons_launch_new_conversation(self) -> None:
+        request_id, request = self.start_launch()
+        self.instance._handle_callback_query(
+            self.launch_callback(request, f"nl:r:{request_id}:0")
+        )
+        request = self.instance.state["launch_requests"][request_id]
+        self.assertEqual("choosing_agent", request["state"])
+        agent_picker = [
+            params
+            for method, params in self.telegram.calls
+            if method == "editMessageText" and "Start a new conversation" in params["text"]
+        ][-1]
+        self.assertEqual(
+            ["Codex", "Claude", "Cancel"],
+            [row[0]["text"] for row in agent_picker["reply_markup"]["inline_keyboard"]],
+        )
+
+        self.instance._handle_callback_query(
+            self.launch_callback(request, f"nl:a:{request_id}:codex")
+        )
+
+        launched = self.instance.state["launch_requests"][request_id]
+        self.assertEqual("starting", launched["state"])
+        self.assertEqual([(self.repository.resolve(), "codex")], self.tmux.launches)
+        self.assertEqual("MuxPager:1", launched["tmux_target"])
+
+    def test_launch_becomes_ready_only_after_conversation_topic_exists(self) -> None:
+        request_id, request = self.start_launch()
+        self.instance._handle_callback_query(
+            self.launch_callback(request, f"nl:r:{request_id}:0")
+        )
+        request = self.instance.state["launch_requests"][request_id]
+        self.instance._handle_callback_query(
+            self.launch_callback(request, f"nl:a:{request_id}:codex")
+        )
+        self.tmux.panes.append(
+            bridge.AgentPane(
+                "%50", "MuxPager", "1", "codex", "0", "codex", "working",
+                "new-conversation-123",
+            )
+        )
+
+        self.instance._sync_topics()
+
+        ready = self.instance.state["launch_requests"][request_id]
+        self.assertEqual("ready", ready["state"])
+        self.assertEqual("new-conversation-123", ready["conversation_id"])
+        confirmation = [
+            params["text"]
+            for method, params in self.telegram.calls
+            if method == "editMessageText" and "is ready" in params["text"]
+        ][-1]
+        self.assertIn("MuxPager · codex · new-con", confirmation)
+
+    def test_unauthorized_launch_button_cannot_start_agent(self) -> None:
+        request_id, request = self.start_launch()
+
+        self.instance._handle_callback_query(
+            self.launch_callback(request, f"nl:r:{request_id}:0", user_id=999)
+        )
+
+        self.assertEqual("choosing_repo", request["state"])
+        self.assertEqual([], self.tmux.launches)
+
+    def test_expired_launch_button_cannot_select_repository(self) -> None:
+        request_id, request = self.start_launch()
+        request["created_at"] = (
+            bridge.time.time() - bridge.LAUNCH_REQUEST_TTL - 1
+        )
+
+        self.instance._handle_callback_query(
+            self.launch_callback(request, f"nl:r:{request_id}:0")
+        )
+
+        self.assertEqual("choosing_repo", request["state"])
+        self.assertEqual([], self.tmux.launches)
+        answer = [
+            params
+            for method, params in self.telegram.calls
+            if method == "answerCallbackQuery"
+        ][-1]
+        self.assertTrue(answer["show_alert"])
+        self.assertIn("expired", answer["text"])
+
+    def test_new_command_is_rejected_inside_an_agent_topic(self) -> None:
+        thread_id = self.configure()
+        self.telegram.calls.clear()
+
+        self.instance._handle_message(
+            {
+                **self.control_message,
+                "message_id": 21,
+                "message_thread_id": thread_id,
+                "text": "/new mux",
+            }
+        )
+
+        self.assertEqual({}, self.instance.state.get("launch_requests"))
+        reply = next(
+            params["text"]
+            for method, params in self.telegram.calls
+            if method == "sendMessage"
+        )
+        self.assertIn("Control topic", reply)
 
     def create_choice(self):
         return self.instance.choice_store.create(

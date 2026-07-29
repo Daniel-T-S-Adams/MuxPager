@@ -10,6 +10,9 @@ import logging
 import os
 from pathlib import Path
 import re
+import secrets
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,12 +27,21 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from questions.store import ACTIVE_STATES, ChoiceStore  # noqa: E402
+from telegram.repositories import (  # noqa: E402
+    Repository,
+    RepositoryCatalog,
+    RepositoryCatalogError,
+)
 
 
 LOG = logging.getLogger("tmux-telegram-bridge")
 TELEGRAM_TEXT_LIMIT = 4096
 LOCAL_PROMPT_CHUNK_LIMIT = 3900
 MAX_INPUT_LENGTH = 4096
+REPOSITORY_RESULT_LIMIT = 8
+LAUNCH_REQUEST_TTL = 900
+LAUNCH_ATTENTION_AFTER = 60
+LAUNCH_EXPIRE_AFTER = 600
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 
 
@@ -99,6 +111,13 @@ class AgentPane:
 class CachedPrompt:
     path: Path
     text: str
+
+
+@dataclass(frozen=True)
+class LaunchTarget:
+    pane_id: str
+    session: str
+    window_index: str
 
 
 def parse_agent_rows(output: str) -> list[AgentPane]:
@@ -232,6 +251,188 @@ class TmuxClient:
             detail = result.stderr.strip() or "agent pane listing failed"
             raise TmuxError(detail)
         return parse_agent_rows(result.stdout)
+
+    @staticmethod
+    def _agent_executable(agent: str) -> str | None:
+        if agent not in {"codex", "claude"}:
+            return None
+        candidates = [
+            shutil.which(agent),
+            str(Path.home() / ".local" / "bin" / agent),
+            f"/usr/local/bin/{agent}",
+            f"/usr/bin/{agent}",
+        ]
+        for candidate in candidates:
+            if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+                return str(Path(candidate).resolve())
+        return None
+
+    def available_agents(self) -> list[str]:
+        return [
+            agent
+            for agent in ("codex", "claude")
+            if self._agent_executable(agent) is not None
+        ]
+
+    def _session_exists(self, session: str) -> bool:
+        try:
+            result = subprocess.run(
+                [self.tmux_bin, "has-session", "-t", f"={session}"],
+                check=False,
+                capture_output=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise TmuxError("Could not inspect tmux sessions") from exc
+        return result.returncode == 0
+
+    def _session_uses_repository(self, session: str, repository: Path) -> bool:
+        try:
+            result = subprocess.run(
+                [
+                    self.tmux_bin,
+                    "list-panes",
+                    "-t",
+                    f"={session}",
+                    "-s",
+                    "-F",
+                    "#{pane_current_path}",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise TmuxError("Could not inspect the tmux session directory") from exc
+        if result.returncode != 0:
+            return False
+        for raw_path in result.stdout.splitlines():
+            try:
+                if Path(raw_path).resolve() == repository:
+                    return True
+            except OSError:
+                continue
+        return False
+
+    def _launch_session_name(self, repository: Path) -> tuple[str, bool]:
+        slug = re.sub(r"[^A-Za-z0-9_-]+", "-", repository.name).strip("-_")
+        slug = (slug or "repository")[:40]
+        if not self._session_exists(slug):
+            return slug, False
+        if self._session_uses_repository(slug, repository):
+            return slug, True
+
+        digest = hashlib.sha256(str(repository).encode("utf-8")).hexdigest()[:6]
+        base = f"{slug[:33]}-{digest}"
+        for suffix in range(100):
+            candidate = base if suffix == 0 else f"{base}-{suffix}"
+            if not self._session_exists(candidate):
+                return candidate, False
+            if self._session_uses_repository(candidate, repository):
+                return candidate, True
+        raise TmuxError("Could not allocate a unique tmux session name")
+
+    def launch_agent(self, repository: Path, agent: str) -> LaunchTarget:
+        repository = Path(repository).resolve()
+        if not repository.is_dir():
+            raise TmuxError("The selected repository directory no longer exists")
+        executable = self._agent_executable(agent)
+        if executable is None:
+            raise TmuxError(f"{agent.title()} is not installed for this service")
+
+        session, exists = self._launch_session_name(repository)
+        output_format = "#{pane_id}\t#{session_name}\t#{window_index}"
+        if exists:
+            create_args = [
+                self.tmux_bin,
+                "new-window",
+                "-d",
+                "-P",
+                "-F",
+                output_format,
+                "-t",
+                f"{session}:",
+                "-n",
+                agent,
+                "-c",
+                str(repository),
+            ]
+        else:
+            create_args = [
+                self.tmux_bin,
+                "new-session",
+                "-d",
+                "-P",
+                "-F",
+                output_format,
+                "-s",
+                session,
+                "-n",
+                agent,
+                "-c",
+                str(repository),
+            ]
+        try:
+            created = subprocess.run(
+                create_args,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            fields = created.stdout.strip().split("\t")
+            if len(fields) != 3 or not fields[0].startswith("%"):
+                raise TmuxError("tmux returned no pane for the new agent")
+            target = LaunchTarget(fields[0], fields[1], fields[2])
+            subprocess.run(
+                [
+                    self.tmux_bin,
+                    "send-keys",
+                    "-t",
+                    target.pane_id,
+                    "-l",
+                    shlex.quote(executable),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=5,
+            )
+            subprocess.run(
+                [self.tmux_bin, "send-keys", "-t", target.pane_id, "Enter"],
+                check=True,
+                capture_output=True,
+                timeout=5,
+            )
+        except TmuxError:
+            raise
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise TmuxError(
+                f"Could not start {agent.title()} in tmux"
+            ) from exc
+        return target
+
+    def pane_exists(self, pane_id: str) -> bool:
+        if not pane_id.startswith("%"):
+            return False
+        try:
+            result = subprocess.run(
+                [
+                    self.tmux_bin,
+                    "display-message",
+                    "-p",
+                    "-t",
+                    pane_id,
+                    "#{pane_dead}\t#{pane_id}",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return result.returncode == 0 and result.stdout.strip() == f"0\t{pane_id}"
 
     def _message_path(self, pane: AgentPane) -> Path:
         if pane.conversation_id:
@@ -523,6 +724,8 @@ class Bridge:
         notify: bool = True,
         close_after: int = 60,
         choice_store: ChoiceStore | None = None,
+        repository_root: Path | None = None,
+        repository_catalog: RepositoryCatalog | None = None,
     ) -> None:
         self.telegram = telegram
         self.tmux = tmux
@@ -532,6 +735,9 @@ class Bridge:
         self.notify = notify
         self.close_after = max(0, close_after)
         self.choice_store = choice_store or ChoiceStore(state_path.parent / "choices")
+        self.repository_catalog = repository_catalog or RepositoryCatalog(
+            repository_root or Path.home()
+        )
         self.state = self._load_state()
         self._bot_id: int | None = None
 
@@ -562,6 +768,164 @@ class Bridge:
             topics = {}
             self.state["topics"] = topics
         return topics
+
+    def _launch_requests(self) -> dict[str, dict[str, Any]]:
+        requests = self.state.get("launch_requests")
+        if not isinstance(requests, dict):
+            requests = {}
+            self.state["launch_requests"] = requests
+        return requests
+
+    def _prune_launch_requests(self, now: float | None = None) -> None:
+        current_time = float(now if now is not None else time.time())
+        changed = False
+        for request_id, launch in list(self._launch_requests().items()):
+            if not isinstance(launch, dict):
+                self._launch_requests().pop(request_id, None)
+                changed = True
+                continue
+            created_at = float(launch.get("created_at", 0))
+            state = launch.get("state")
+            retention = 3600 if state in {"ready", "failed", "cancelled"} else 86400
+            if current_time - created_at > retention:
+                self._launch_requests().pop(request_id, None)
+                changed = True
+        if changed:
+            self._save_state()
+
+    def _repository_label(self, path: Path) -> str:
+        try:
+            label = str(path.resolve().relative_to(self.repository_catalog.root))
+        except (OSError, ValueError):
+            label = path.name
+        if label == ".":
+            label = self.repository_catalog.root.name
+        return re.sub(r"[\x00-\x1f\x7f]+", " ", label).strip() or path.name
+
+    @staticmethod
+    def _launch_keyboard(
+        request_id: str, repositories: list[Repository]
+    ) -> dict[str, Any]:
+        rows: list[list[dict[str, str]]] = []
+        for index, repository in enumerate(repositories):
+            label = re.sub(
+                r"[\x00-\x1f\x7f]+", " ", repository.relative_path
+            ).strip()
+            rows.append(
+                [
+                    {
+                        "text": trim_label(label or repository.name, 60),
+                        "callback_data": f"nl:r:{request_id}:{index}",
+                    }
+                ]
+            )
+        rows.append(
+            [{"text": "Cancel", "callback_data": f"nl:x:{request_id}"}]
+        )
+        return {"inline_keyboard": rows}
+
+    @staticmethod
+    def _agent_keyboard(request_id: str, agents: list[str]) -> dict[str, Any]:
+        labels = {"codex": "Codex", "claude": "Claude"}
+        rows = [
+            [
+                {
+                    "text": labels.get(agent, agent.title()),
+                    "callback_data": f"nl:a:{request_id}:{agent}",
+                }
+            ]
+            for agent in agents
+        ]
+        rows.append(
+            [{"text": "Cancel", "callback_data": f"nl:x:{request_id}"}]
+        )
+        return {"inline_keyboard": rows}
+
+    def _edit_launch_message(
+        self,
+        launch: dict[str, Any],
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> None:
+        chat_id = launch.get("chat_id")
+        message_id = launch.get("message_id")
+        if not isinstance(chat_id, int) or not isinstance(message_id, int):
+            return
+        try:
+            self.telegram.call(
+                "editMessageText",
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": trim_middle(text, TELEGRAM_TEXT_LIMIT),
+                    "reply_markup": reply_markup or {"inline_keyboard": []},
+                },
+            )
+        except TelegramError as exc:
+            if "message is not modified" not in str(exc).lower():
+                LOG.warning("Could not update agent launch request: %s", exc)
+
+    def _start_repository_picker(
+        self, message: dict[str, Any], query: str
+    ) -> None:
+        query = " ".join(query.split())
+        if len(query) > 100:
+            self._reply(message, "Repository searches are limited to 100 characters.")
+            return
+        try:
+            repositories, total = self.repository_catalog.search(
+                query, limit=REPOSITORY_RESULT_LIMIT
+            )
+        except RepositoryCatalogError as exc:
+            self._reply(message, f"Could not search repositories: {exc}")
+            return
+        if not repositories:
+            suffix = f" matching “{query}”" if query else ""
+            self._reply(
+                message,
+                f"No Git repositories found{suffix} beneath "
+                f"{self.repository_catalog.root}. Try /new SEARCH.",
+            )
+            return
+        if not self.tmux.available_agents():
+            self._reply(
+                message,
+                "Neither Codex nor Claude is installed in the bridge environment.",
+            )
+            return
+
+        request_id = secrets.token_hex(6)
+        search_text = f" matching “{query}”" if query else ""
+        more = (
+            f"\n\nShowing {len(repositories)} of {total}; use /new SEARCH to narrow it."
+            if total > len(repositories)
+            else ""
+        )
+        chat = message.get("chat") or {}
+        thread_id = message.get("message_thread_id")
+        sent = self._send_message(
+            int(chat["id"]),
+            f"Choose a repository{search_text} beneath "
+            f"{self.repository_catalog.root}.{more}",
+            int(thread_id) if isinstance(thread_id, int) else None,
+            disable_notification=True,
+            reply_markup=self._launch_keyboard(request_id, repositories),
+        )
+        message_id = sent.get("message_id")
+        if not isinstance(message_id, int):
+            raise TelegramError("Telegram repository picker has no message id")
+        self._launch_requests()[request_id] = {
+            "id": request_id,
+            "state": "choosing_repo",
+            "created_at": time.time(),
+            "query": query,
+            "repositories": [str(repository.path) for repository in repositories],
+            "chat_id": int(chat["id"]),
+            "thread_id": int(thread_id) if isinstance(thread_id, int) else None,
+            "message_id": message_id,
+        }
+        self._prune_launch_requests()
+        self._save_state()
 
     def _pairing_reply(self, message: dict[str, Any]) -> None:
         chat = message.get("chat") or {}
@@ -681,6 +1045,7 @@ class Bridge:
             self.state["topics"] = {}
             self.state.pop("agent_status", None)
             self.state.pop("message_versions", None)
+            self.state.pop("launch_requests", None)
             self.state["topic_sync_initialized"] = False
         self.state["group_chat_id"] = chat_id
         self.state["group_title"] = str(full_chat.get("title") or "tmux agents")
@@ -1342,6 +1707,89 @@ class Bridge:
                     LOG.warning("%s", exc)
                     break
 
+    def _sync_launches(self, panes: list[AgentPane]) -> None:
+        now = time.time()
+        changed = False
+        for launch in self._launch_requests().values():
+            if not isinstance(launch, dict):
+                continue
+            state = launch.get("state")
+            if state == "launching":
+                started_at = float(launch.get("launch_started_at", now))
+                if now - started_at > 15:
+                    launch["state"] = "failed"
+                    launch["finished_at"] = now
+                    self._edit_launch_message(
+                        launch,
+                        "Agent launch was interrupted before tmux returned a target.",
+                    )
+                    changed = True
+                continue
+            if state != "starting":
+                continue
+
+            pane_id = str(launch.get("pane_id") or "")
+            agent = str(launch.get("agent") or "")
+            pane = next(
+                (
+                    candidate
+                    for candidate in panes
+                    if candidate.pane_id == pane_id
+                    and candidate.agent == agent
+                    and candidate.identity_ready
+                ),
+                None,
+            )
+            if pane is not None:
+                topic = self._topics().get(pane.topic_key)
+                if isinstance(topic, dict) and isinstance(topic.get("thread_id"), int):
+                    launch["state"] = "ready"
+                    launch["conversation_id"] = pane.conversation_id
+                    launch["topic_key"] = pane.topic_key
+                    launch["finished_at"] = now
+                    self._edit_launch_message(
+                        launch,
+                        f"✓ {agent.title()} is ready in {self._repository_label(Path(str(launch['repository'])))}.\n"
+                        f"Topic: {pane.topic_name}\n"
+                        f"tmux target: {launch.get('tmux_target')}",
+                    )
+                    changed = True
+                    continue
+
+            started_at = float(launch.get("launch_started_at", now))
+            elapsed = now - started_at
+            if not self.tmux.pane_exists(pane_id) and elapsed > 3:
+                launch["state"] = "failed"
+                launch["finished_at"] = now
+                self._edit_launch_message(
+                    launch,
+                    f"{agent.title()} exited before its conversation became ready.",
+                )
+                changed = True
+            elif elapsed >= LAUNCH_EXPIRE_AFTER:
+                launch["state"] = "failed"
+                launch["finished_at"] = now
+                self._edit_launch_message(
+                    launch,
+                    f"{agent.title()} did not report a conversation identity. "
+                    f"Inspect tmux target {launch.get('tmux_target')}.",
+                )
+                changed = True
+            elif elapsed >= LAUNCH_ATTENTION_AFTER and not launch.get(
+                "attention_reported"
+            ):
+                launch["attention_reported"] = True
+                self._edit_launch_message(
+                    launch,
+                    f"{agent.title()} is running but has not finished starting. "
+                    "It may be waiting for a local trust or login prompt.\n"
+                    f"Inspect tmux target {launch.get('tmux_target')}.",
+                )
+                changed = True
+        if changed:
+            self._save_state()
+        self._prune_launch_requests(now)
+
     def _sync_topics(self) -> int:
         if self._group_chat_id() is None:
             return 0
@@ -1371,6 +1819,7 @@ class Bridge:
             except TelegramError as exc:
                 LOG.warning("Could not create/reopen topic for %s: %s", pane.label, exc)
 
+        self._sync_launches(panes)
         self._close_missing_topics(live_keys, time.time())
         self._sync_choices(panes)
         self._sync_local_prompts(routable_panes)
@@ -1468,6 +1917,157 @@ class Bridge:
         except TelegramError as exc:
             LOG.warning("Could not answer Telegram choice callback: %s", exc)
 
+    def _launch_request_for_callback(
+        self, callback: dict[str, Any], request_id: str
+    ) -> dict[str, Any] | None:
+        launch = self._launch_requests().get(request_id)
+        message = callback.get("message") or {}
+        chat = message.get("chat") or {}
+        if (
+            not isinstance(launch, dict)
+            or self._group_chat_id() != chat.get("id")
+            or launch.get("chat_id") != chat.get("id")
+            or launch.get("message_id") != message.get("message_id")
+            or launch.get("thread_id") != message.get("message_thread_id")
+            or time.time() - float(launch.get("created_at", 0))
+            > LAUNCH_REQUEST_TTL
+        ):
+            return None
+        return launch
+
+    def _handle_launch_callback(self, callback: dict[str, Any], data: str) -> None:
+        callback_id = callback.get("id")
+        repo_match = re.fullmatch(r"nl:r:([a-f0-9]{12}):([0-7])", data)
+        agent_match = re.fullmatch(
+            r"nl:a:([a-f0-9]{12}):(codex|claude)", data
+        )
+        cancel_match = re.fullmatch(r"nl:x:([a-f0-9]{12})", data)
+        request_id = (
+            repo_match.group(1)
+            if repo_match
+            else agent_match.group(1)
+            if agent_match
+            else cancel_match.group(1)
+            if cancel_match
+            else ""
+        )
+        launch = self._launch_request_for_callback(callback, request_id)
+        if launch is None:
+            self._answer_callback(
+                callback_id, "This launch request expired.", show_alert=True
+            )
+            return
+
+        if cancel_match:
+            if launch.get("state") not in {"choosing_repo", "choosing_agent"}:
+                self._answer_callback(callback_id, "This launch already started.")
+                return
+            launch["state"] = "cancelled"
+            launch["finished_at"] = time.time()
+            self._save_state()
+            self._answer_callback(callback_id, "Cancelled.")
+            self._edit_launch_message(launch, "Agent launch cancelled.")
+            return
+
+        if repo_match:
+            if launch.get("state") != "choosing_repo":
+                self._answer_callback(callback_id, "Repository already selected.")
+                return
+            repositories = launch.get("repositories")
+            index = int(repo_match.group(2))
+            if not isinstance(repositories, list) or index >= len(repositories):
+                self._answer_callback(
+                    callback_id, "Repository is no longer available.", show_alert=True
+                )
+                return
+            try:
+                selected = self.repository_catalog.validate(Path(repositories[index]))
+            except RepositoryCatalogError as exc:
+                launch["state"] = "failed"
+                launch["finished_at"] = time.time()
+                self._save_state()
+                self._answer_callback(callback_id, "Repository unavailable.")
+                self._edit_launch_message(launch, f"Could not continue: {exc}")
+                return
+            agents = self.tmux.available_agents()
+            if not agents:
+                self._answer_callback(callback_id, "No agent CLI is installed.")
+                return
+            launch["state"] = "choosing_agent"
+            launch["repository"] = str(selected)
+            self._save_state()
+            label = self._repository_label(selected)
+            self._answer_callback(callback_id, f"Selected {label}")
+            self._edit_launch_message(
+                launch,
+                f"Start a new conversation in {label} with:",
+                self._agent_keyboard(request_id, agents),
+            )
+            return
+
+        if agent_match:
+            if launch.get("state") != "choosing_agent":
+                self._answer_callback(callback_id, "This launch already started.")
+                return
+            agent = agent_match.group(2)
+            repository_raw = launch.get("repository")
+            if not isinstance(repository_raw, str) or not repository_raw:
+                self._answer_callback(
+                    callback_id, "Repository selection is missing.", show_alert=True
+                )
+                return
+            try:
+                repository = self.repository_catalog.validate(
+                    Path(repository_raw)
+                )
+            except RepositoryCatalogError as exc:
+                launch["state"] = "failed"
+                launch["finished_at"] = time.time()
+                self._save_state()
+                self._answer_callback(callback_id, "Repository unavailable.")
+                self._edit_launch_message(launch, f"Could not start the agent: {exc}")
+                return
+
+            launch["state"] = "launching"
+            launch["agent"] = agent
+            launch["launch_started_at"] = time.time()
+            self._save_state()
+            label = self._repository_label(repository)
+            self._answer_callback(callback_id, f"Starting {agent.title()}…")
+            self._edit_launch_message(
+                launch, f"⏳ Starting {agent.title()} in {label}…"
+            )
+            try:
+                target = self.tmux.launch_agent(repository, agent)
+            except TmuxError as exc:
+                launch["state"] = "failed"
+                launch["finished_at"] = time.time()
+                launch["error"] = str(exc)
+                self._save_state()
+                self._edit_launch_message(
+                    launch, f"Could not start {agent.title()} in {label}: {exc}"
+                )
+                return
+            launch.update(
+                {
+                    "state": "starting",
+                    "pane_id": target.pane_id,
+                    "session": target.session,
+                    "window_index": target.window_index,
+                    "tmux_target": f"{target.session}:{target.window_index}",
+                }
+            )
+            self._save_state()
+            self._edit_launch_message(
+                launch,
+                f"⏳ {agent.title()} is starting in {label}.\n"
+                f"tmux target: {target.session}:{target.window_index}\n\n"
+                "Waiting for its conversation identity and Telegram topic…",
+            )
+            return
+
+        self._answer_callback(callback_id, "Unknown launch action.")
+
     def _handle_callback_query(self, callback: dict[str, Any]) -> None:
         callback_id = callback.get("id")
         sender = callback.get("from") or {}
@@ -1475,6 +2075,9 @@ class Bridge:
             self._answer_callback(callback_id, "Not authorized.", show_alert=True)
             return
         data = callback.get("data")
+        if isinstance(data, str) and data.startswith("nl:"):
+            self._handle_launch_callback(callback, data)
+            return
         match = (
             re.fullmatch(r"mq:([a-f0-9]{24}):([0-5]|c)", data)
             if isinstance(data, str)
@@ -1596,6 +2199,7 @@ class Bridge:
                 message,
                 "/sync — reconcile live agent topics\n"
                 "/status — show agent states\n"
+                "/new [SEARCH] — start an agent in a repository\n"
                 "/send TEXT — send TEXT to this topic's agent\n\n"
                 "Ordinary text and agent slash commands are sent literally to "
                 "the agent mapped to the current topic. When an agent asks one "
@@ -1604,6 +2208,18 @@ class Bridge:
             return
 
         thread_id = message.get("message_thread_id")
+        if command == "/new":
+            if isinstance(thread_id, int):
+                topic_key, _ = self._topic_for_thread(thread_id)
+                if topic_key is not None:
+                    self._reply(
+                        message,
+                        "Start new conversations from the Control topic so the "
+                        "repository picker does not interrupt an existing agent.",
+                    )
+                    return
+            self._start_repository_picker(message, remainder)
+            return
         if not isinstance(thread_id, int):
             self._reply(message, "Send agent messages inside an agent topic.")
             return
@@ -1741,6 +2357,9 @@ def main() -> int:
         )
     ).expanduser()
     choice_dir_raw = os.environ.get("MUXPAGER_CHOICE_DIR", "").strip()
+    repository_root = Path(
+        os.environ.get("TMUX_TELEGRAM_REPO_ROOT", str(Path.home()))
+    ).expanduser()
     bridge = Bridge(
         TelegramClient(token),
         tmux,
@@ -1749,6 +2368,7 @@ def main() -> int:
         poll_timeout=int(os.environ.get("TMUX_TELEGRAM_POLL_TIMEOUT", "5")),
         notify=env_bool("TMUX_TELEGRAM_NOTIFY", True),
         close_after=int(os.environ.get("TMUX_TELEGRAM_CLOSE_AFTER", "60")),
+        repository_root=repository_root,
         choice_store=(
             ChoiceStore(Path(choice_dir_raw).expanduser())
             if choice_dir_raw

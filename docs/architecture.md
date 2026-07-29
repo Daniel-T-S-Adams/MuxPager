@@ -15,6 +15,10 @@ Claude hooks ─┘                                         │
 Codex/Claude MCP choice tool ─► durable choice store ─► Telegram buttons
                                                             │
                                                             └─► next user prompt
+
+Telegram /new ─► bounded Git repository catalog ─► detached tmux agent
+                                                        │
+                                                        └─► conversation topic
 ```
 
 ## Agent identity and state
@@ -74,6 +78,7 @@ of agent type and session ID):
 | Telegram token and allowed user | `~/.config/tmux-telegram-bridge/env` |
 | Telegram group/topic mapping | `~/.local/state/tmux-telegram-bridge/state.json` |
 | Pending and completed choice questions | `~/.local/state/tmux-telegram-bridge/choices/` |
+| Pending Telegram agent launches | Telegram bridge `state.json` |
 | Installer ownership metadata | `~/.config/muxpager/install.json` |
 
 Credentials and learned chat IDs are never stored in the checkout.
@@ -115,3 +120,18 @@ delivers the label as an ordinary next user prompt only after the pane is idle.
 A direct tmux prompt submitted first marks the question answered locally.
 Requests survive bridge restarts, and only one can remain active for a logical
 agent topic.
+
+## Telegram agent-launch lifecycle
+
+`/new [SEARCH]` builds a cached, bounded catalog of Git working trees beneath
+`TMUX_TELEGRAM_REPO_ROOT` (the service user's home directory by default). The
+picker stores resolved candidate paths server-side; callback data contains only
+a random launch ID and a result index. Repository selection is revalidated
+inside the configured root before the bridge creates any process.
+
+The bridge chooses an installed Codex or Claude executable, creates a detached
+tmux session or window with the selected repository as its working directory,
+and types the known absolute executable path literally into the new pane. A
+launch remains in `starting` state until the normal pane collector supplies a
+stable agent conversation ID and topic creation succeeds. Exited panes and
+startup timeouts become visible failures in the original Control message.
