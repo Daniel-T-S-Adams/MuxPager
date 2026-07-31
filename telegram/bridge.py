@@ -82,16 +82,21 @@ class AgentPane:
     def topic_name(self) -> str:
         parts = [self.session]
         window = self.window_name.strip()
-        # tmux's default automatic-rename format temporarily calls a window
-        # "[tmux]" while its active pane is in copy mode. That is terminal UI
-        # state, not a meaningful window rename, so do not propagate it to the
-        # persistent Telegram topic title.
-        if window and window.casefold() not in {self.agent.casefold(), "[tmux]"}:
+        # Automatic tmux window names follow the foreground process and can
+        # oscillate between the shell and agent. Use a custom window title when
+        # one exists, but never expose the opaque conversation ID in Telegram.
+        # The bridge routes with the full ID stored in topic_key, not the title.
+        generic_windows = {
+            self.agent.casefold(),
+            "[tmux]",
+            "bash",
+            "fish",
+            "sh",
+            "zsh",
+        }
+        if window and window.casefold() not in generic_windows:
             parts.append(window)
-        if self.conversation_id:
-            parts.append(f"{self.agent} · {self.conversation_id[:8]}")
-        else:
-            parts.append(f"{self.agent} #{self.pane_index}")
+        parts.append(f"{self.agent} #{self.pane_index}")
         return trim_label(" · ".join(parts), 128)
 
 
@@ -816,21 +821,10 @@ class Bridge:
                 disable_notification=True,
             )
 
-        if record.get("name") != pane.topic_name:
-            try:
-                self.telegram.call(
-                    "editForumTopic",
-                    {
-                        "chat_id": chat_id,
-                        "message_thread_id": int(record["thread_id"]),
-                        "name": pane.topic_name,
-                    },
-                )
-            except TelegramError as exc:
-                LOG.warning("Could not rename agent topic: %s", exc)
-            else:
-                record["name"] = pane.topic_name
-
+        # Topic titles are presentation only. Never reconcile them after
+        # creation: tmux window names are volatile, conversations can move to
+        # another pane, and users may choose a better title in Telegram. The
+        # full conversation identity below remains authoritative for routing.
         record["pane_id"] = pane.pane_id
         record["label"] = pane.label
         record["conversation_id"] = pane.conversation_id

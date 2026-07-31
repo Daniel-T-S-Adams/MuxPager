@@ -25,6 +25,29 @@ _state_pri() {
     esac
 }
 
+# Map a managed worktree path back to the equivalent directory in its primary
+# checkout. MuxPager uses .muxpager/worktrees; retain the older Claude deploy
+# layout so both kinds remain grouped beneath their parent session.
+_worktree_origin_paths() {
+    local cwd="$1"
+    local marker="" repo_root="" remainder="" source_cwd=""
+
+    case "$cwd" in
+        */.muxpager/worktrees/*) marker="/.muxpager/worktrees/" ;;
+        */.claude/worktrees/*)   marker="/.claude/worktrees/" ;;
+        *) return 1 ;;
+    esac
+
+    repo_root="${cwd%%"$marker"*}"
+    remainder="${cwd#"$repo_root$marker"}"
+    source_cwd="$repo_root"
+    case "$remainder" in
+        */*) source_cwd="$repo_root/${remainder#*/}" ;;
+    esac
+
+    printf '%s\t%s\n' "$source_cwd" "$repo_root"
+}
+
 # Hook-written identity files bridge the very short startup interval before a
 # new agent appears in the process snapshot. After that grace, process liveness
 # is authoritative: a marker alone must not turn a shell into an agent pane.
@@ -181,20 +204,20 @@ collect_data() {
     declare -A root_to_session
     for sname in "${!sess_cwd[@]}"; do
         local cwd="${sess_cwd[$sname]}"
-        if [[ "$cwd" != */.claude/worktrees/* ]]; then
+        if ! _worktree_origin_paths "$cwd" >/dev/null; then
             root_to_session[$cwd]="$sname"
         fi
     done
 
     for sname in "${!sess_cwd[@]}"; do
         local cwd="${sess_cwd[$sname]}"
-        if [[ "$cwd" == */.claude/worktrees/* ]]; then
-            local repo_root="${cwd%%/.claude/worktrees/*}"
-            local parent="${root_to_session[$repo_root]:-}"
-            if [ -n "$parent" ] && [ "$parent" != "$sname" ]; then
-                worktree_parent[$sname]="$parent"
-                worktree_children[$parent]+="$sname "
-            fi
+        local origin_paths="" source_cwd="" repo_root="" parent=""
+        origin_paths=$(_worktree_origin_paths "$cwd") || continue
+        IFS=$'\t' read -r source_cwd repo_root <<< "$origin_paths"
+        parent="${root_to_session[$source_cwd]:-${root_to_session[$repo_root]:-}}"
+        if [ -n "$parent" ] && [ "$parent" != "$sname" ]; then
+            worktree_parent[$sname]="$parent"
+            worktree_children[$parent]+="$sname "
         fi
     done
 

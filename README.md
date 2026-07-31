@@ -53,8 +53,8 @@ tmux                                        Telegram
 
 ## Requirements
 
-- Linux with tmux, systemd user services, Python 3, Bash 4+, `fzf`, `ps`, and
-  `pgrep`.
+- Linux with tmux, systemd user services, Python 3, Bash 4+, Git, `fzf`, `ps`,
+  and `pgrep`.
 - Codex CLI, Claude Code, or both.
 - A Telegram account for the phone interface.
 
@@ -63,19 +63,19 @@ On Ubuntu or Debian:
 
 ```bash
 sudo apt update
-sudo apt install tmux fzf procps python3
+sudo apt install git tmux fzf procps python3
 ```
 
 On Fedora:
 
 ```bash
-sudo dnf install tmux fzf procps-ng python3
+sudo dnf install git tmux fzf procps-ng python3
 ```
 
 On Arch Linux:
 
 ```bash
-sudo pacman -S --needed tmux fzf procps-ng python
+sudo pacman -S --needed git tmux fzf procps-ng python
 ```
 
 The installer checks every required command before changing your configuration.
@@ -179,7 +179,32 @@ checks, notifications, and troubleshooting.
 | `prefix + o` | Focus or recreate the sidebar |
 | `prefix + N` | Jump to the next agent waiting for attention |
 | `prefix + p` | Park the current session for later |
-| `prefix + C` | Create a named detached background session |
+| `prefix + C` | Choose a repository and create an isolated named session |
+
+`prefix + C` first opens an fzf list of Git repositories near the MuxPager
+checkout. Type part of a name such as `tig-swarm-demo`, press Enter, then enter
+the new tmux session name. MuxPager creates both a detached tmux session and an
+isolated Git worktree in the selected repository. A session named
+`api-refactor`, for example, starts on `muxpager/api-refactor` under that
+repository's `.muxpager/worktrees/api-refactor`. Existing branches and paths
+are never reused; MuxPager adds `-2`, `-3`, and so on instead.
+
+The worktree starts from the selected repository's committed `HEAD`.
+Uncommitted and untracked changes are intentionally not copied. `.muxpager/`
+is added to the selected repository's private `.git/info/exclude`, not its
+tracked `.gitignore`, so the primary checkout stays clean.
+
+Closing a tmux session does not delete its worktree or branch because they may
+contain uncommitted work. After saving or discarding that work, remove them
+explicitly from the primary checkout:
+
+```bash
+git worktree remove .muxpager/worktrees/api-refactor
+git branch -d muxpager/api-refactor
+```
+
+Session names must start with a letter or number and may contain letters,
+numbers, hyphens, and underscores.
 
 Inside the sidebar, select a session, window, or pane and press `p` to park or
 unpark that exact target. In the popup switcher, use `Ctrl-P`. Sending a new

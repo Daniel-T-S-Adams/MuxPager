@@ -24,6 +24,8 @@ bash -n \
     "$PROJECT_ROOT/bin/muxpager-agent-list" \
     "$PROJECT_ROOT/telegram/setup.sh" \
     "$PROJECT_ROOT/scripts/doctor.sh" \
+    "$PROJECT_ROOT/scripts/new-session-picker.sh" \
+    "$PROJECT_ROOT/scripts/new-session.sh" \
     "$PROJECT_ROOT/scripts/setup-runtime-links.sh" \
     "$PROJECT_ROOT/plugins/tmux-agent-status/hooks/cache-conversation-id.sh" \
     "$PROJECT_ROOT/plugins/tmux-agent-status/hooks/cache-user-prompt.sh" \
@@ -32,6 +34,8 @@ bash -n \
 "$PROJECT_ROOT/tests/test_path_portability.sh"
 "$PROJECT_ROOT/tests/test_install_preflight.sh"
 "$PROJECT_ROOT/tests/test_installer.sh"
+"$PROJECT_ROOT/tests/test_new_session_picker.sh"
+"$PROJECT_ROOT/tests/test_new_session_worktree.sh"
 
 passed=0
 failed=0

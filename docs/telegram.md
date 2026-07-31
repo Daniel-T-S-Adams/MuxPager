@@ -64,9 +64,12 @@ This is unnecessary when your user session remains logged in.
 
 Open an agent topic and send ordinary text. The bot validates the mapping, pastes
 the text literally into the pane currently running that conversation, sends
-Enter, and reacts with 👍. The short suffix in the topic title comes from the
-agent's stable session ID; it distinguishes separate conversations with similar
-tmux names.
+Enter, and reacts with 👍. Topic titles are human labels created once from the
+tmux session, any custom window name, the agent type, and the initial pane
+index. The bot never automatically renames an existing agent topic, so tmux's
+changing automatic window titles cannot cause churn and any title you set
+manually in Telegram is preserved. Routing uses the full agent conversation ID
+stored privately in bridge state, never the visible topic title.
 
 Unknown slash commands such as `/review` are passed literally to the agent.
 `/send TEXT` is an explicit equivalent for ordinary text.
