@@ -29,6 +29,30 @@ HOME="$TEST_HOME" "$RELOCATED_ROOT/scripts/setup-runtime-links.sh"
 HOME="$TEST_HOME" tmux -L "$TEST_SOCKET" \
     -f "$RELOCATED_ROOT/.tmux.conf" new-session -d -s portability
 
+new_session_binding="$(tmux -L "$TEST_SOCKET" list-keys -T prefix C)"
+held_control_binding="$(tmux -L "$TEST_SOCKET" list-keys -T prefix C-c)"
+for binding in "$new_session_binding" "$held_control_binding"; do
+    case "$binding" in
+        *'display-popup -EE '*'new-session-picker.sh'*) ;;
+        *)
+            echo "both Ctrl-b Shift-C forms must open the repository picker" >&2
+            exit 1
+            ;;
+    esac
+    case "$binding" in
+        *'#{pane_current_path}'*) ;;
+        *)
+            echo "the repository picker must start from the active pane directory" >&2
+            exit 1
+            ;;
+    esac
+done
+
+if [ ! -x "$RELOCATED_ROOT/scripts/new-session-picker.sh" ]; then
+    echo "the relocated repository picker is not executable" >&2
+    exit 1
+fi
+
 detected_root="$(
     tmux -L "$TEST_SOCKET" show-environment -g MUXPAGER_ROOT |
         sed 's/^[^=]*=//'

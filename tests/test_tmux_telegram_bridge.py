@@ -32,14 +32,33 @@ class TelegramBridgeTests(unittest.TestCase):
         self.assertEqual("%2", panes[0].pane_id)
         self.assertEqual("tr › codex › codex #1", panes[0].label)
         self.assertEqual("codex-session-123", panes[0].conversation_id)
-        self.assertEqual("tr · codex · codex-se", panes[0].topic_name)
+        self.assertEqual("tr · codex #1", panes[0].topic_name)
 
-    def test_topic_name_ignores_tmux_copy_mode_window_name(self) -> None:
-        pane = bridge.AgentPane(
-            "%2", "tr", "0", "[tmux]", "1", "codex", "working"
+    def test_topic_name_ignores_volatile_tmux_window_names_and_hashes(self) -> None:
+        for window_name in ("[tmux]", "bash", "codex"):
+            pane = bridge.AgentPane(
+                "%2",
+                "tr",
+                "0",
+                window_name,
+                "1",
+                "codex",
+                "working",
+                "codex-session-123",
+            )
+            self.assertEqual("tr · codex #1", pane.topic_name)
+
+        custom = bridge.AgentPane(
+            "%2",
+            "tr",
+            "0",
+            "api-refactor",
+            "1",
+            "codex",
+            "working",
+            "codex-session-123",
         )
-
-        self.assertEqual("tr · codex #1", pane.topic_name)
+        self.assertEqual("tr · api-refactor · codex #1", custom.topic_name)
 
     def test_clean_capture_removes_prompt_and_footer(self) -> None:
         captured = "Old line\n\n• Final answer\n─ Worked for 2m ─\n\n› Run /review\n\ngpt-5.6-sol"
@@ -406,7 +425,7 @@ class ForumTopicBridgeTests(unittest.TestCase):
             for method, params in self.telegram.calls
             if method == "editMessageText" and "is ready" in params["text"]
         ][-1]
-        self.assertIn("MuxPager · codex · new-con", confirmation)
+        self.assertIn("MuxPager · codex #0", confirmation)
 
     def test_unauthorized_launch_button_cannot_start_agent(self) -> None:
         request_id, request = self.start_launch()
@@ -500,7 +519,33 @@ class ForumTopicBridgeTests(unittest.TestCase):
             for method, params in self.telegram.calls
             if method == "createForumTopic"
         )
-        self.assertEqual("tr · codex · codex-se", create["name"])
+        self.assertEqual("tr · codex #1", create["name"])
+
+    def test_existing_topic_title_is_never_automatically_renamed(self) -> None:
+        thread_id = self.configure()
+        original_name = self.instance.state["topics"][self.pane.topic_key]["name"]
+        self.telegram.calls.clear()
+        moved = bridge.AgentPane(
+            "%99",
+            "other-session",
+            "3",
+            "new-window-title",
+            "0",
+            "codex",
+            "working",
+            self.pane.conversation_id,
+        )
+        self.tmux.panes = [moved]
+
+        self.instance._sync_topics()
+
+        record = self.instance.state["topics"][moved.topic_key]
+        self.assertEqual(thread_id, record["thread_id"])
+        self.assertEqual(original_name, record["name"])
+        self.assertEqual("%99", record["pane_id"])
+        self.assertNotIn(
+            "editForumTopic", [method for method, _ in self.telegram.calls]
+        )
 
     def test_setup_rejects_a_group_with_other_members(self) -> None:
         self.telegram.member_count = 3

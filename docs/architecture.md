@@ -80,8 +80,23 @@ of agent type and session ID):
 | Pending and completed choice questions | `~/.local/state/tmux-telegram-bridge/choices/` |
 | Pending Telegram agent launches | Telegram bridge `state.json` |
 | Installer ownership metadata | `~/.config/muxpager/install.json` |
+| Per-session Git worktrees | `<primary-checkout>/.muxpager/worktrees/` |
 
 Credentials and learned chat IDs are never stored in the checkout.
+
+## Isolated session creation
+
+The `prefix + C` flow opens a popup repository picker. It discovers Git
+checkouts near MuxPager while pruning managed `.muxpager/` directories, then
+passes the selected repository and typed session name as separate arguments to
+the worktree helper. MuxPager creates a unique `muxpager/<session>` branch at
+the selected repository's committed `HEAD`, adds a linked worktree under its
+primary checkout's `.muxpager/worktrees/` directory, and starts the detached
+session there. It records the worktree path, branch, and primary checkout as
+tmux session options.
+
+Worktrees deliberately outlive their tmux sessions. Automatic removal could
+destroy uncommitted changes, so cleanup remains an explicit Git operation.
 
 ## Prompt mirroring
 

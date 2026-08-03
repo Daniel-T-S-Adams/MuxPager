@@ -19,7 +19,7 @@ fail() {
     FAILURES=$((FAILURES + 1))
 }
 
-for command_name in tmux python3 fzf ps pgrep systemctl; do
+for command_name in tmux python3 fzf git ps pgrep systemctl; do
     if command -v "$command_name" >/dev/null 2>&1; then
         pass "$command_name is installed"
     else

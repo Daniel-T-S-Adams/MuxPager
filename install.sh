@@ -16,6 +16,7 @@ require_command bash
 require_command python3
 require_command tmux
 require_command fzf
+require_command git
 require_command ps
 require_command pgrep
 require_command "$SYSTEMCTL_BIN"

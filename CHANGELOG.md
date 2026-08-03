@@ -10,6 +10,8 @@ All notable changes to MuxPager are documented here. The project uses
 - `/new [SEARCH]` in Telegram Control, with a bounded repository picker rooted
   at the service user's home (`/root` on this server), Codex/Claude selection,
   detached tmux startup, and automatic handoff to the new conversation topic.
+- `prefix + C` now provides an fzf repository picker, then creates an isolated
+  `muxpager/<session>` Git branch and linked worktree in the selected checkout.
 - Single-choice questions from Codex or Claude appear as inline buttons in the
   matching Telegram topic, with durable first-answer-wins delivery back to the
   exact agent pane.
@@ -20,6 +22,10 @@ All notable changes to MuxPager are documented here. The project uses
 
 ### Changed
 
+- Telegram agent topics now receive a human-readable title once and are never
+  automatically renamed. Opaque conversation-ID suffixes are no longer shown,
+  volatile tmux window names cannot cause title churn, and manual topic names
+  are preserved.
 - Telegram topics now follow the stable Codex or Claude conversation session
   ID instead of a tmux position. Resuming a conversation in another pane keeps
   its topic, while starting a new conversation in the same pane creates a new
