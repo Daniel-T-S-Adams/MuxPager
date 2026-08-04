@@ -359,6 +359,55 @@ class ForumTopicBridgeTests(unittest.TestCase):
         )
         return request_id, request
 
+    def add_legacy_topic(
+        self,
+        *,
+        thread_id=77,
+        agent="codex",
+        closed=True,
+        pane_index="1",
+    ):
+        pane = bridge.AgentPane(
+            f"%{thread_id}",
+            f"legacy-{thread_id}",
+            "0",
+            agent,
+            pane_index,
+            agent,
+            "done",
+        )
+        self.instance.state.setdefault("topics", {})[pane.legacy_topic_key] = {
+            "thread_id": thread_id,
+            "name": f"legacy {agent}",
+            "pane_id": pane.pane_id,
+            "label": pane.label,
+            "closed": closed,
+        }
+        return pane.legacy_topic_key
+
+    def start_legacy_prune(self):
+        self.instance._handle_message(
+            {
+                **self.control_message,
+                "message_id": 30,
+                "text": "/prune legacy",
+            }
+        )
+        return next(iter(self.instance.state["legacy_prune_requests"].items()))
+
+    @staticmethod
+    def legacy_prune_callback(request_id, request, action="y", user_id=42):
+        return {
+            "id": "prune-callback",
+            "from": {"id": user_id},
+            "data": f"pl:{action}:{request_id}",
+            "message": {
+                "message_id": request["message_id"],
+                "message_thread_id": request["thread_id"],
+                "chat": {"id": -100123, "type": "supergroup"},
+            },
+        }
+
     def test_new_command_searches_repositories_and_shows_picker(self) -> None:
         request_id, request = self.start_launch()
 
@@ -471,6 +520,174 @@ class ForumTopicBridgeTests(unittest.TestCase):
         )
 
         self.assertEqual({}, self.instance.state.get("launch_requests"))
+        reply = next(
+            params["text"]
+            for method, params in self.telegram.calls
+            if method == "sendMessage"
+        )
+        self.assertIn("Control topic", reply)
+
+    def test_prune_legacy_previews_only_closed_pre_upgrade_topics(self) -> None:
+        self.configure()
+        closed_legacy = self.add_legacy_topic(thread_id=77)
+        self.add_legacy_topic(thread_id=78, closed=False)
+        self.add_legacy_topic(thread_id=79, agent="devin")
+        modern = bridge.AgentPane(
+            "%80", "modern", "0", "codex", "0", "codex", "done", "session-80"
+        )
+        self.instance.state["topics"][modern.topic_key] = {
+            "thread_id": 80,
+            "closed": True,
+        }
+        self.telegram.calls.clear()
+
+        request_id, request = self.start_legacy_prune()
+
+        self.assertEqual([closed_legacy], request["topic_keys"])
+        self.assertEqual("pending", request["state"])
+        self.assertFalse(
+            any(method == "deleteForumTopic" for method, _ in self.telegram.calls)
+        )
+        confirmation = next(
+            params
+            for method, params in self.telegram.calls
+            if method == "sendMessage" and "reply_markup" in params
+        )
+        self.assertIn("Delete 1 closed legacy topic?", confirmation["text"])
+        self.assertEqual(
+            f"pl:y:{request_id}",
+            confirmation["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
+        )
+
+    def test_confirmed_legacy_prune_deletes_topic_and_local_mapping(self) -> None:
+        self.configure()
+        legacy_key = self.add_legacy_topic(thread_id=77)
+        self.instance.state["agent_status"] = {legacy_key: "done"}
+        self.instance.state["message_versions"] = {legacy_key: "v1"}
+        request_id, request = self.start_legacy_prune()
+        self.telegram.calls.clear()
+
+        self.instance._handle_callback_query(
+            self.legacy_prune_callback(request_id, request)
+        )
+
+        self.assertIn(
+            (
+                "deleteForumTopic",
+                {"chat_id": -100123, "message_thread_id": 77},
+            ),
+            self.telegram.calls,
+        )
+        self.assertNotIn(legacy_key, self.instance.state["topics"])
+        self.assertNotIn(legacy_key, self.instance.state["agent_status"])
+        self.assertNotIn(legacy_key, self.instance.state["message_versions"])
+        self.assertEqual("completed", request["state"])
+        self.assertEqual(1, request["deleted"])
+
+    def test_legacy_prune_cleans_missing_topics_but_retains_api_failures(self) -> None:
+        self.configure()
+        missing_key = self.add_legacy_topic(thread_id=77)
+        failed_key = self.add_legacy_topic(thread_id=78)
+        request_id, request = self.start_legacy_prune()
+        self.telegram.calls.clear()
+        real_call = self.telegram.call
+
+        def delete_with_failures(method, params=None, http_timeout=30):
+            if method == "deleteForumTopic":
+                self.telegram.calls.append((method, dict(params or {})))
+                if params["message_thread_id"] == 77:
+                    raise bridge.TelegramError("Bad Request: message thread not found")
+                raise bridge.TelegramError("Forbidden: not enough rights")
+            return real_call(method, params, http_timeout)
+
+        with mock.patch.object(self.telegram, "call", side_effect=delete_with_failures):
+            self.instance._handle_callback_query(
+                self.legacy_prune_callback(request_id, request)
+            )
+
+        self.assertNotIn(missing_key, self.instance.state["topics"])
+        self.assertIn(failed_key, self.instance.state["topics"])
+        self.assertEqual(1, request["deleted"])
+        self.assertEqual(1, request["failed"])
+        result = [
+            params["text"]
+            for method, params in self.telegram.calls
+            if method == "editMessageText"
+        ][-1]
+        self.assertIn("run /prune legacy to retry", result)
+
+    def test_legacy_prune_revalidates_live_topics_before_deleting(self) -> None:
+        self.configure()
+        legacy_key = self.add_legacy_topic(thread_id=77)
+        request_id, request = self.start_legacy_prune()
+        self.telegram.calls.clear()
+        parts = legacy_key.split("\x1f")
+        self.tmux.panes = [
+            bridge.AgentPane(
+                "%77", parts[0], parts[1], "codex", parts[2], parts[3], "working"
+            )
+        ]
+
+        self.instance._handle_callback_query(
+            self.legacy_prune_callback(request_id, request)
+        )
+
+        self.assertIn(legacy_key, self.instance.state["topics"])
+        self.assertFalse(
+            any(method == "deleteForumTopic" for method, _ in self.telegram.calls)
+        )
+        self.assertEqual(1, request["skipped"])
+
+    def test_legacy_prune_requires_bound_authorized_confirmation(self) -> None:
+        self.configure()
+        legacy_key = self.add_legacy_topic(thread_id=77)
+        request_id, request = self.start_legacy_prune()
+        self.telegram.calls.clear()
+
+        self.instance._handle_callback_query(
+            self.legacy_prune_callback(request_id, request, user_id=999)
+        )
+        forged = self.legacy_prune_callback(request_id, request)
+        forged["message"]["message_id"] += 1
+        self.instance._handle_callback_query(forged)
+
+        self.assertIn(legacy_key, self.instance.state["topics"])
+        self.assertEqual("pending", request["state"])
+        self.assertFalse(
+            any(method == "deleteForumTopic" for method, _ in self.telegram.calls)
+        )
+
+    def test_legacy_prune_can_be_cancelled(self) -> None:
+        self.configure()
+        legacy_key = self.add_legacy_topic(thread_id=77)
+        request_id, request = self.start_legacy_prune()
+        self.telegram.calls.clear()
+
+        self.instance._handle_callback_query(
+            self.legacy_prune_callback(request_id, request, action="x")
+        )
+
+        self.assertIn(legacy_key, self.instance.state["topics"])
+        self.assertEqual("cancelled", request["state"])
+        self.assertFalse(
+            any(method == "deleteForumTopic" for method, _ in self.telegram.calls)
+        )
+
+    def test_prune_legacy_is_rejected_inside_an_agent_topic(self) -> None:
+        thread_id = self.configure()
+        self.add_legacy_topic(thread_id=77)
+        self.telegram.calls.clear()
+
+        self.instance._handle_message(
+            {
+                **self.control_message,
+                "message_id": 31,
+                "message_thread_id": thread_id,
+                "text": "/prune legacy",
+            }
+        )
+
+        self.assertEqual({}, self.instance.state.get("legacy_prune_requests"))
         reply = next(
             params["text"]
             for method, params in self.telegram.calls

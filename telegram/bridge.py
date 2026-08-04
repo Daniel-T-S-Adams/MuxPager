@@ -42,6 +42,8 @@ REPOSITORY_RESULT_LIMIT = 8
 LAUNCH_REQUEST_TTL = 900
 LAUNCH_ATTENTION_AFTER = 60
 LAUNCH_EXPIRE_AFTER = 600
+LEGACY_PRUNE_REQUEST_TTL = 900
+FINISHED_REQUEST_RETENTION = 3600
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 
 
@@ -781,6 +783,51 @@ class Bridge:
             self.state["launch_requests"] = requests
         return requests
 
+    def _legacy_prune_requests(self) -> dict[str, dict[str, Any]]:
+        requests = self.state.get("legacy_prune_requests")
+        if not isinstance(requests, dict):
+            requests = {}
+            self.state["legacy_prune_requests"] = requests
+        return requests
+
+    @staticmethod
+    def _is_prunable_legacy_topic(key: str, record: Any) -> bool:
+        parts = key.split("\x1f")
+        return (
+            len(parts) == 4
+            and parts[-1] in {"codex", "claude"}
+            and isinstance(record, dict)
+            and record.get("closed") is True
+            and isinstance(record.get("thread_id"), int)
+        )
+
+    def _prunable_legacy_topics(self) -> dict[str, dict[str, Any]]:
+        return {
+            key: record
+            for key, record in self._topics().items()
+            if self._is_prunable_legacy_topic(key, record)
+        }
+
+    def _prune_legacy_prune_requests(self, now: float | None = None) -> None:
+        current_time = float(now if now is not None else time.time())
+        changed = False
+        for request_id, prune in list(self._legacy_prune_requests().items()):
+            if not isinstance(prune, dict):
+                self._legacy_prune_requests().pop(request_id, None)
+                changed = True
+                continue
+            created_at = float(prune.get("created_at", 0))
+            retention = (
+                LEGACY_PRUNE_REQUEST_TTL
+                if prune.get("state") == "pending"
+                else FINISHED_REQUEST_RETENTION
+            )
+            if current_time - created_at > retention:
+                self._legacy_prune_requests().pop(request_id, None)
+                changed = True
+        if changed:
+            self._save_state()
+
     def _prune_launch_requests(self, now: float | None = None) -> None:
         current_time = float(now if now is not None else time.time())
         changed = False
@@ -1051,6 +1098,7 @@ class Bridge:
             self.state.pop("agent_status", None)
             self.state.pop("message_versions", None)
             self.state.pop("launch_requests", None)
+            self.state.pop("legacy_prune_requests", None)
             self.state["topic_sync_initialized"] = False
         self.state["group_chat_id"] = chat_id
         self.state["group_title"] = str(full_chat.get("title") or "tmux agents")
@@ -1817,6 +1865,7 @@ class Bridge:
         self._close_missing_topics(live_keys, time.time())
         self._sync_choices(panes)
         self._sync_local_prompts(routable_panes)
+        self._prune_legacy_prune_requests()
 
         current_status = {pane.topic_key: pane.status for pane in routable_panes}
         current_versions = {
@@ -1910,6 +1959,187 @@ class Bridge:
             )
         except TelegramError as exc:
             LOG.warning("Could not answer Telegram choice callback: %s", exc)
+
+    def _edit_legacy_prune_message(
+        self, prune: dict[str, Any], text: str
+    ) -> None:
+        chat_id = prune.get("chat_id")
+        message_id = prune.get("message_id")
+        if not isinstance(chat_id, int) or not isinstance(message_id, int):
+            return
+        try:
+            self.telegram.call(
+                "editMessageText",
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": trim_middle(text, TELEGRAM_TEXT_LIMIT),
+                    "reply_markup": {"inline_keyboard": []},
+                },
+            )
+        except TelegramError as exc:
+            if "message is not modified" not in str(exc).lower():
+                LOG.warning("Could not update legacy-prune request: %s", exc)
+
+    def _start_legacy_prune(self, message: dict[str, Any]) -> None:
+        candidates = self._prunable_legacy_topics()
+        if not candidates:
+            self._reply(message, "No closed legacy Codex/Claude topics to delete.")
+            return
+
+        chat = message.get("chat") or {}
+        chat_id = int(chat["id"])
+        thread_id = message.get("message_thread_id")
+        request_id = secrets.token_hex(6)
+        count = len(candidates)
+        noun = "topic" if count == 1 else "topics"
+        sent = self._send_message(
+            chat_id,
+            f"Delete {count} closed legacy {noun}?\n\n"
+            "This permanently erases their Telegram history. Modern conversation "
+            "topics, open topics, and Devin topics will not be touched.",
+            int(thread_id) if isinstance(thread_id, int) else None,
+            disable_notification=True,
+            reply_markup={
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": f"Delete {count} legacy {noun}",
+                            "callback_data": f"pl:y:{request_id}",
+                        }
+                    ],
+                    [
+                        {
+                            "text": "Cancel",
+                            "callback_data": f"pl:x:{request_id}",
+                        }
+                    ],
+                ]
+            },
+        )
+        self._legacy_prune_requests()[request_id] = {
+            "state": "pending",
+            "created_at": time.time(),
+            "chat_id": chat_id,
+            "thread_id": int(thread_id) if isinstance(thread_id, int) else None,
+            "message_id": int(sent["message_id"]),
+            "topic_keys": list(candidates),
+        }
+        self._save_state()
+
+    def _legacy_prune_request_for_callback(
+        self, callback: dict[str, Any], request_id: str
+    ) -> dict[str, Any] | None:
+        prune = self._legacy_prune_requests().get(request_id)
+        message = callback.get("message") or {}
+        chat = message.get("chat") or {}
+        if (
+            not isinstance(prune, dict)
+            or prune.get("state") != "pending"
+            or self._group_chat_id() != chat.get("id")
+            or prune.get("chat_id") != chat.get("id")
+            or prune.get("message_id") != message.get("message_id")
+            or prune.get("thread_id") != message.get("message_thread_id")
+            or time.time() - float(prune.get("created_at", 0))
+            > LEGACY_PRUNE_REQUEST_TTL
+        ):
+            return None
+        return prune
+
+    def _remove_legacy_topic_state(self, key: str) -> None:
+        self._topics().pop(key, None)
+        for state_key in ("agent_status", "message_versions"):
+            values = self.state.get(state_key)
+            if isinstance(values, dict):
+                values.pop(key, None)
+        self._save_state()
+
+    def _handle_legacy_prune_callback(
+        self, callback: dict[str, Any], data: str
+    ) -> None:
+        callback_id = callback.get("id")
+        match = re.fullmatch(r"pl:([yx]):([a-f0-9]{12})", data)
+        request_id = match.group(2) if match else ""
+        prune = self._legacy_prune_request_for_callback(callback, request_id)
+        if match is None or prune is None:
+            self._answer_callback(
+                callback_id, "This cleanup request expired.", show_alert=True
+            )
+            return
+
+        if match.group(1) == "x":
+            prune["state"] = "cancelled"
+            prune["finished_at"] = time.time()
+            self._save_state()
+            self._answer_callback(callback_id, "Cleanup cancelled.")
+            self._edit_legacy_prune_message(prune, "Legacy-topic cleanup cancelled.")
+            return
+
+        try:
+            panes = self.tmux.agents()
+        except TmuxError as exc:
+            LOG.warning("Could not revalidate legacy topics before cleanup: %s", exc)
+            self._answer_callback(
+                callback_id,
+                "Could not verify live agents; nothing was deleted.",
+                show_alert=True,
+            )
+            return
+
+        protected_keys = {
+            pane.legacy_topic_key for pane in panes if not pane.identity_ready
+        }
+        topic_keys = prune.get("topic_keys")
+        if not isinstance(topic_keys, list):
+            topic_keys = []
+        prune["state"] = "processing"
+        self._save_state()
+
+        chat_id = int(prune["chat_id"])
+        deleted = 0
+        failed = 0
+        skipped = 0
+        for key in topic_keys:
+            record = self._topics().get(key) if isinstance(key, str) else None
+            if (
+                not isinstance(key, str)
+                or key in protected_keys
+                or not self._is_prunable_legacy_topic(key, record)
+            ):
+                skipped += 1
+                continue
+            thread_id = int(record["thread_id"])
+            try:
+                self.telegram.call(
+                    "deleteForumTopic",
+                    {"chat_id": chat_id, "message_thread_id": thread_id},
+                )
+            except TelegramError as exc:
+                if not self._topic_is_missing_error(exc):
+                    LOG.warning("Could not delete legacy topic %s: %s", thread_id, exc)
+                    failed += 1
+                    continue
+            self._remove_legacy_topic_state(key)
+            deleted += 1
+
+        prune["state"] = "completed"
+        prune["finished_at"] = time.time()
+        prune["deleted"] = deleted
+        prune["failed"] = failed
+        prune["skipped"] = skipped
+        self._save_state()
+        self._answer_callback(callback_id, f"Deleted {deleted} legacy topic(s).")
+
+        lines = [f"✓ Deleted {deleted} closed legacy topic(s)."]
+        if skipped:
+            lines.append(
+                f"Skipped {skipped} topic(s) that are open, active, or no longer legacy."
+            )
+        if failed:
+            lines.append(
+                f"Could not delete {failed} topic(s); run /prune legacy to retry them."
+            )
+        self._edit_legacy_prune_message(prune, "\n".join(lines))
 
     def _launch_request_for_callback(
         self, callback: dict[str, Any], request_id: str
@@ -2072,6 +2302,9 @@ class Bridge:
         if isinstance(data, str) and data.startswith("nl:"):
             self._handle_launch_callback(callback, data)
             return
+        if isinstance(data, str) and data.startswith("pl:"):
+            self._handle_legacy_prune_callback(callback, data)
+            return
         match = (
             re.fullmatch(r"mq:([a-f0-9]{24}):([0-5]|c)", data)
             if isinstance(data, str)
@@ -2194,6 +2427,7 @@ class Bridge:
                 "/sync — reconcile live agent topics\n"
                 "/status — show agent states\n"
                 "/new [SEARCH] — start an agent in a repository\n"
+                "/prune legacy — delete closed pre-upgrade topics\n"
                 "/send TEXT — send TEXT to this topic's agent\n\n"
                 "Ordinary text and agent slash commands are sent literally to "
                 "the agent mapped to the current topic. When an agent asks one "
@@ -2202,6 +2436,21 @@ class Bridge:
             return
 
         thread_id = message.get("message_thread_id")
+        if command == "/prune":
+            if remainder.strip().casefold() != "legacy":
+                self._reply(message, "Usage: /prune legacy")
+                return
+            if isinstance(thread_id, int):
+                topic_key, _ = self._topic_for_thread(thread_id)
+                if topic_key is not None:
+                    self._reply(
+                        message,
+                        "Clean up legacy topics from the Control topic so the "
+                        "confirmation is not placed inside an agent conversation.",
+                    )
+                    return
+            self._start_legacy_prune(message)
+            return
         if command == "/new":
             if isinstance(thread_id, int):
                 topic_key, _ = self._topic_for_thread(thread_id)
