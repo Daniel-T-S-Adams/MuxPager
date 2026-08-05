@@ -251,9 +251,10 @@ class TelegramBridgeTests(unittest.TestCase):
         ) as session_exists:
             name = client._resume_session_name(REPO_ROOT, conversation_id)
 
-        self.assertEqual("my-tmux-019fba20-1", name)
+        base = f"{REPO_ROOT.name}-019fba20"
+        self.assertEqual(f"{base}-1", name)
         self.assertEqual(
-            [mock.call("my-tmux-019fba20"), mock.call("my-tmux-019fba20-1")],
+            [mock.call(base), mock.call(f"{base}-1")],
             session_exists.call_args_list,
         )
 
