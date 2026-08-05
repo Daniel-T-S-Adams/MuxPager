@@ -44,6 +44,8 @@ Telegram delivery pauses rather than choosing an ambiguous target.
 An open topic created by an older MuxPager release is migrated once from its
 position-based key when that live agent next reports a conversation ID. Closed
 legacy topics are left as history and are never attached to a new conversation.
+Live modern mappings also retain their validated working directory so they can
+be resumed safely from Telegram after closing.
 
 ## Stable integration boundary
 
@@ -157,3 +159,18 @@ and types the known absolute executable path literally into the new pane. A
 launch remains in `starting` state until the normal pane collector supplies a
 stable agent conversation ID and topic creation succeeds. Exited panes and
 startup timeouts become visible failures in the original Control message.
+
+## Telegram conversation-resume lifecycle
+
+`/resume [SEARCH]` selects only closed, stable Codex/Claude conversation
+identities that are not currently live. The bridge resolves their local agent
+session metadata, validates the original working directory beneath
+`TMUX_TELEGRAM_REPO_ROOT`, and stores only server-side candidates; Telegram
+callback data contains a random request ID and bounded index.
+
+After selection is revalidated, the bridge creates a new detached tmux session
+dedicated to that conversation and types a command composed only from the known
+agent executable, its fixed resume flag, and a locally stored UUID. The request
+becomes ready only when the target pane reports the expected conversation ID
+and the original Telegram topic has reopened. A different ID is a visible
+failure rather than a handoff to the wrong topic.

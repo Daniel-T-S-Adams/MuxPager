@@ -4,6 +4,7 @@ import importlib.util
 import hashlib
 import json
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -180,6 +181,83 @@ class TelegramBridgeTests(unittest.TestCase):
         )
         self.assertFalse(any(call == ["bash", "-c"] for call in calls))
 
+    def test_resume_agent_uses_a_dedicated_session_and_exact_cli_id(self) -> None:
+        conversation_id = "019fba20-0898-7383-b7df-a686a55fae84"
+        for agent, expected_arguments in (
+            ("codex", ["resume", conversation_id]),
+            ("claude", ["--resume", conversation_id]),
+        ):
+            with self.subTest(agent=agent):
+                client = bridge.TmuxClient(REPO_ROOT)
+                calls: list[list[str]] = []
+
+                def fake_run(args, **kwargs):
+                    calls.append(list(args))
+                    if args[1] == "new-session":
+                        return subprocess.CompletedProcess(
+                            args, 0, stdout="%60\tmuxpager-019fba20\t0\n", stderr=""
+                        )
+                    return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+                with mock.patch.object(
+                    client, "_agent_executable", return_value=f"/opt/Agent Tools/{agent}"
+                ):
+                    with mock.patch.object(
+                        client,
+                        "_resume_session_name",
+                        return_value="muxpager-019fba20",
+                    ):
+                        with mock.patch.object(
+                            bridge.subprocess, "run", side_effect=fake_run
+                        ):
+                            target = client.resume_agent(
+                                REPO_ROOT, agent, conversation_id
+                            )
+
+                self.assertEqual(
+                    bridge.LaunchTarget("%60", "muxpager-019fba20", "0"), target
+                )
+                self.assertEqual("new-session", calls[0][1])
+                self.assertNotIn("new-window", [call[1] for call in calls])
+                self.assertEqual(
+                    [
+                        "tmux",
+                        "send-keys",
+                        "-t",
+                        "%60",
+                        "-l",
+                        shlex.join(
+                            [f"/opt/Agent Tools/{agent}", *expected_arguments]
+                        ),
+                    ],
+                    calls[1],
+                )
+
+    def test_resume_agent_rejects_an_untrusted_session_id(self) -> None:
+        client = bridge.TmuxClient(REPO_ROOT)
+
+        with mock.patch.object(bridge.subprocess, "run") as run:
+            with self.assertRaises(bridge.TmuxError):
+                client.resume_agent(REPO_ROOT, "codex", "$(touch /tmp/unsafe)")
+
+        run.assert_not_called()
+
+    def test_resume_session_name_never_reuses_an_existing_tmux_session(self) -> None:
+        client = bridge.TmuxClient(REPO_ROOT)
+        conversation_id = "019fba20-0898-7383-b7df-a686a55fae84"
+
+        with mock.patch.object(
+            client, "_session_exists", side_effect=[True, False]
+        ) as session_exists:
+            name = client._resume_session_name(REPO_ROOT, conversation_id)
+
+        base = f"{REPO_ROOT.name}-019fba20"
+        self.assertEqual(f"{base}-1", name)
+        self.assertEqual(
+            [mock.call(base), mock.call(f"{base}-1")],
+            session_exists.call_args_list,
+        )
+
     def test_split_utf16_preserves_complete_unicode_text(self) -> None:
         original = "a🙂b🙂c"
 
@@ -244,7 +322,9 @@ class FakeTmux:
         self.prompts = {pane.topic_key: [] for pane in panes}
         self.sent: list[tuple[str, str]] = []
         self.launches: list[tuple[Path, str]] = []
+        self.resumes: list[tuple[Path, str, str]] = []
         self.launched_panes: set[str] = set()
+        self.directories: dict[str, Path] = {}
 
     def agents(self):
         return list(self.panes)
@@ -280,10 +360,31 @@ class FakeTmux:
         self.launched_panes.add("%50")
         return bridge.LaunchTarget("%50", repository.name, "1")
 
+    def resume_agent(self, repository, agent, conversation_id):
+        self.resumes.append((Path(repository), agent, conversation_id))
+        self.launched_panes.add("%60")
+        return bridge.LaunchTarget(
+            "%60", f"{repository.name}-{conversation_id[:8]}", "0"
+        )
+
+    def pane_directory(self, pane):
+        directory = self.directories.get(pane.pane_id)
+        if directory is None:
+            raise bridge.TmuxError("test pane has no directory")
+        return directory
+
     def pane_exists(self, pane_id):
         return pane_id in self.launched_panes or any(
             pane.pane_id == pane_id for pane in self.panes
         )
+
+
+class FakeSessionMetadata:
+    def __init__(self) -> None:
+        self.directories: dict[tuple[str, str], Path] = {}
+
+    def resolve(self, agent, conversation_id):
+        return self.directories.get((agent, conversation_id))
 
 
 class ForumTopicBridgeTests(unittest.TestCase):
@@ -302,10 +403,12 @@ class ForumTopicBridgeTests(unittest.TestCase):
         )
         self.telegram = FakeTelegram()
         self.tmux = FakeTmux([self.pane])
+        self.session_metadata = FakeSessionMetadata()
         self.repository_root = Path(self.temporary.name) / "repositories"
         self.repository = self.repository_root / "MuxPager"
         (self.repository / ".git").mkdir(parents=True)
         (self.repository_root / "another-project" / ".git").mkdir(parents=True)
+        self.tmux.directories[self.pane.pane_id] = self.repository
         self.instance = bridge.Bridge(
             self.telegram,
             self.tmux,
@@ -313,6 +416,7 @@ class ForumTopicBridgeTests(unittest.TestCase):
             state_path=Path(self.temporary.name) / "state.json",
             close_after=0,
             repository_root=self.repository_root,
+            session_metadata=self.session_metadata,
         )
         self.control_message = {
             "message_id": 1,
@@ -358,6 +462,66 @@ class ForumTopicBridgeTests(unittest.TestCase):
             iter(self.instance.state["launch_requests"].items())
         )
         return request_id, request
+
+    def add_closed_conversation(
+        self,
+        conversation_id="019fba20-0898-7383-b7df-a686a55fae84",
+        *,
+        agent="codex",
+        thread_id=77,
+        working_directory=None,
+        with_metadata=True,
+    ):
+        topic_key = "\x1f".join(("conversation", agent, conversation_id))
+        record = {
+            "thread_id": thread_id,
+            "name": f"MuxPager · {agent} #0",
+            "label": f"MuxPager › {agent} › {agent} #0",
+            "closed": True,
+            "conversation_id": conversation_id,
+            "missing_since": 1000.0 + thread_id,
+        }
+        if working_directory is not None:
+            record["working_directory"] = str(working_directory)
+        self.instance.state.setdefault("topics", {})[topic_key] = record
+        if with_metadata:
+            self.session_metadata.directories[(agent, conversation_id)] = (
+                Path(working_directory)
+                if working_directory is not None
+                else self.repository
+            )
+        return topic_key, record
+
+    def start_resume(self, query=""):
+        self.instance._handle_message(
+            {
+                **self.control_message,
+                "message_id": 30,
+                "text": f"/resume {query}".rstrip(),
+            }
+        )
+        return next(
+            (
+                (request_id, request)
+                for request_id, request in self.instance.state[
+                    "launch_requests"
+                ].items()
+                if request.get("kind") == "resume"
+            )
+        )
+
+    @staticmethod
+    def resume_callback(request, data, user_id=42):
+        return {
+            "id": "resume-callback",
+            "from": {"id": user_id},
+            "data": data,
+            "message": {
+                "message_id": request["message_id"],
+                "message_thread_id": request["thread_id"],
+                "chat": {"id": -100123, "type": "supergroup"},
+            },
+        }
 
     def add_legacy_topic(
         self,
@@ -520,6 +684,210 @@ class ForumTopicBridgeTests(unittest.TestCase):
         )
 
         self.assertEqual({}, self.instance.state.get("launch_requests"))
+        reply = next(
+            params["text"]
+            for method, params in self.telegram.calls
+            if method == "sendMessage"
+        )
+        self.assertIn("Control topic", reply)
+
+    def test_resume_lists_only_resolvable_closed_conversations(self) -> None:
+        self.configure()
+        topic_key, record = self.add_closed_conversation()
+        self.add_closed_conversation(
+            "b57bf8e4-59a7-4b10-a809-fa8ef9b3acee",
+            agent="claude",
+            thread_id=78,
+            with_metadata=False,
+        )
+        open_id = "019fbe91-30b4-72a3-8924-ef219a769a01"
+        open_key, open_record = self.add_closed_conversation(
+            open_id, thread_id=79
+        )
+        open_record["closed"] = False
+        self.telegram.calls.clear()
+
+        request_id, request = self.start_resume("mux")
+
+        self.assertEqual("choosing_resume", request["state"])
+        self.assertEqual([topic_key], [item["topic_key"] for item in request["candidates"]])
+        self.assertEqual(
+            str(self.repository.resolve()), record["working_directory"]
+        )
+        self.assertNotIn(open_key, [item["topic_key"] for item in request["candidates"]])
+        picker = next(
+            params
+            for method, params in self.telegram.calls
+            if method == "sendMessage" and "reply_markup" in params
+        )
+        self.assertIn("1 other closed conversation", picker["text"])
+        self.assertEqual(
+            f"rs:r:{request_id}:0",
+            picker["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
+        )
+
+    def test_resume_selection_starts_exact_conversation_in_dedicated_session(
+        self,
+    ) -> None:
+        self.configure()
+        conversation_id = "019fba20-0898-7383-b7df-a686a55fae84"
+        self.add_closed_conversation(conversation_id)
+        request_id, request = self.start_resume()
+        self.telegram.calls.clear()
+
+        self.instance._handle_callback_query(
+            self.resume_callback(request, f"rs:r:{request_id}:0")
+        )
+
+        self.assertEqual(
+            [(self.repository.resolve(), "codex", conversation_id)],
+            self.tmux.resumes,
+        )
+        self.assertEqual("starting", request["state"])
+        self.assertEqual("MuxPager-019fba20", request["session"])
+        status = [
+            params["text"]
+            for method, params in self.telegram.calls
+            if method == "editMessageText"
+        ][-1]
+        self.assertIn("Dedicated tmux session", status)
+
+    def test_resumed_conversation_reopens_original_topic_when_identity_matches(
+        self,
+    ) -> None:
+        self.configure()
+        conversation_id = "019fba20-0898-7383-b7df-a686a55fae84"
+        topic_key, _ = self.add_closed_conversation(conversation_id)
+        request_id, request = self.start_resume()
+        self.instance._handle_callback_query(
+            self.resume_callback(request, f"rs:r:{request_id}:0")
+        )
+        resumed = bridge.AgentPane(
+            "%60",
+            request["session"],
+            "0",
+            "codex",
+            "0",
+            "codex",
+            "working",
+            conversation_id,
+        )
+        self.tmux.panes.append(resumed)
+        self.tmux.directories[resumed.pane_id] = self.repository
+        self.telegram.calls.clear()
+
+        self.instance._sync_topics()
+
+        self.assertFalse(self.instance.state["topics"][topic_key]["closed"])
+        self.assertIn(
+            (
+                "reopenForumTopic",
+                {"chat_id": -100123, "message_thread_id": 77},
+            ),
+            self.telegram.calls,
+        )
+        self.assertEqual("ready", request["state"])
+        ready = [
+            params["text"]
+            for method, params in self.telegram.calls
+            if method == "editMessageText"
+        ][-1]
+        self.assertIn("Telegram topic reopened", ready)
+        self.assertIn("Dedicated tmux session", ready)
+
+    def test_resume_fails_if_cli_reports_a_different_conversation(self) -> None:
+        self.configure()
+        conversation_id = "019fba20-0898-7383-b7df-a686a55fae84"
+        self.add_closed_conversation(conversation_id)
+        request_id, request = self.start_resume()
+        self.instance._handle_callback_query(
+            self.resume_callback(request, f"rs:r:{request_id}:0")
+        )
+        wrong = bridge.AgentPane(
+            "%60",
+            request["session"],
+            "0",
+            "codex",
+            "0",
+            "codex",
+            "working",
+            "019fbe91-30b4-72a3-8924-ef219a769a01",
+        )
+        self.tmux.panes.append(wrong)
+        self.tmux.directories[wrong.pane_id] = self.repository
+
+        self.instance._sync_topics()
+
+        self.assertEqual("failed", request["state"])
+        failure = [
+            params["text"]
+            for method, params in self.telegram.calls
+            if method == "editMessageText"
+        ][-1]
+        self.assertIn("started a different conversation", failure)
+
+    def test_resume_refuses_to_duplicate_a_conversation_that_became_live(self) -> None:
+        self.configure()
+        conversation_id = "019fba20-0898-7383-b7df-a686a55fae84"
+        self.add_closed_conversation(conversation_id)
+        request_id, request = self.start_resume()
+        self.tmux.panes.append(
+            bridge.AgentPane(
+                "%70", "existing", "0", "codex", "0", "codex", "working",
+                conversation_id,
+            )
+        )
+        self.telegram.calls.clear()
+
+        self.instance._handle_callback_query(
+            self.resume_callback(request, f"rs:r:{request_id}:0")
+        )
+
+        self.assertEqual([], self.tmux.resumes)
+        self.assertEqual("cancelled", request["state"])
+        result = [
+            params["text"]
+            for method, params in self.telegram.calls
+            if method == "editMessageText"
+        ][-1]
+        self.assertIn("already active", result)
+
+    def test_resume_callback_is_bound_to_authorized_picker_message(self) -> None:
+        self.configure()
+        self.add_closed_conversation()
+        request_id, request = self.start_resume()
+        self.telegram.calls.clear()
+
+        self.instance._handle_callback_query(
+            self.resume_callback(request, f"rs:r:{request_id}:0", user_id=999)
+        )
+        forged = self.resume_callback(request, f"rs:r:{request_id}:0")
+        forged["message"]["message_id"] += 1
+        self.instance._handle_callback_query(forged)
+
+        self.assertEqual([], self.tmux.resumes)
+        self.assertEqual("choosing_resume", request["state"])
+
+    def test_resume_command_is_rejected_inside_an_agent_topic(self) -> None:
+        thread_id = self.configure()
+        self.add_closed_conversation()
+        self.telegram.calls.clear()
+
+        self.instance._handle_message(
+            {
+                **self.control_message,
+                "message_id": 31,
+                "message_thread_id": thread_id,
+                "text": "/resume muxpager",
+            }
+        )
+
+        self.assertFalse(
+            any(
+                request.get("kind") == "resume"
+                for request in self.instance.state.get("launch_requests", {}).values()
+            )
+        )
         reply = next(
             params["text"]
             for method, params in self.telegram.calls
@@ -728,6 +1096,10 @@ class ForumTopicBridgeTests(unittest.TestCase):
 
         self.assertEqual(-100123, self.instance.state["group_chat_id"])
         self.assertEqual(101, thread_id)
+        self.assertEqual(
+            str(self.repository.resolve()),
+            self.instance.state["topics"][self.pane.topic_key]["working_directory"],
+        )
         methods = [method for method, _ in self.telegram.calls]
         self.assertIn("editGeneralForumTopic", methods)
         self.assertIn("createForumTopic", methods)
@@ -880,12 +1252,17 @@ class ForumTopicBridgeTests(unittest.TestCase):
             "codex-session-123",
         )
         self.tmux.panes = [replacement]
+        moved_directory = self.repository_root / "another-project"
+        self.tmux.directories[replacement.pane_id] = moved_directory
 
         self.instance._sync_topics()
 
         record = self.instance.state["topics"][replacement.topic_key]
         self.assertEqual(thread_id, record["thread_id"])
         self.assertEqual("%99", record["pane_id"])
+        self.assertEqual(
+            str(moved_directory.resolve()), record["working_directory"]
+        )
         self.assertNotIn(
             "createForumTopic", [method for method, _ in self.telegram.calls]
         )

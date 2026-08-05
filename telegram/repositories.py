@@ -90,6 +90,24 @@ class RepositoryCatalog:
             )
         return candidate
 
+    def validate_directory(self, path: Path) -> Path:
+        """Validate a trusted conversation cwd beneath the configured root."""
+        try:
+            candidate = Path(path).expanduser().resolve()
+        except (OSError, RuntimeError) as exc:
+            raise RepositoryCatalogError(
+                "The conversation directory could not be resolved"
+            ) from exc
+        if (
+            not self.root.is_dir()
+            or not candidate.is_dir()
+            or not self._inside_root(candidate)
+        ):
+            raise RepositoryCatalogError(
+                "The conversation directory is outside the configured repository root"
+            )
+        return candidate
+
     def discover(self, *, refresh: bool = False) -> list[Repository]:
         now = time.monotonic()
         if (

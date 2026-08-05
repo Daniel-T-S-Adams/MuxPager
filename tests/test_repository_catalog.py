@@ -68,6 +68,21 @@ class RepositoryCatalogTests(unittest.TestCase):
         with self.assertRaises(repositories.RepositoryCatalogError):
             catalog.validate(plain)
 
+    def test_validate_directory_allows_non_git_cwd_beneath_root(self) -> None:
+        plain = self.root / "plain" / "nested"
+        plain.mkdir(parents=True)
+        catalog = repositories.RepositoryCatalog(self.root)
+
+        self.assertEqual(plain.resolve(), catalog.validate_directory(plain))
+
+    def test_validate_directory_rejects_paths_outside_root(self) -> None:
+        outside = self.base / "outside"
+        outside.mkdir()
+        catalog = repositories.RepositoryCatalog(self.root)
+
+        with self.assertRaises(repositories.RepositoryCatalogError):
+            catalog.validate_directory(outside)
+
 
 if __name__ == "__main__":
     unittest.main()
