@@ -7,6 +7,8 @@ All notable changes to MuxPager are documented here. The project uses
 
 ### Added
 
+- `/prune legacy` in Telegram Control, with a short-lived confirmation before
+  deleting closed pre-upgrade topics and their obsolete local mappings.
 - `/new [SEARCH]` in Telegram Control, with a bounded repository picker rooted
   at the service user's home (`/root` on this server), Codex/Claude selection,
   detached tmux startup, and automatic handoff to the new conversation topic.

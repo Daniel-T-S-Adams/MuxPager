@@ -228,6 +228,9 @@ In the Telegram `Control` topic:
 - `/new [SEARCH]` searches Git repositories beneath the configured root
   (`/root` on this server), then starts a new Codex or Claude conversation in
   the selected repository and opens its topic.
+- `/prune legacy` previews closed position-based Codex/Claude topics left by an
+  older MuxPager release, then offers an explicit confirmation before
+  permanently deleting their Telegram history and local mappings.
 - `/help` displays the bot command guide.
 
 ## How it works

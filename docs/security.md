@@ -49,6 +49,10 @@ or Telegram usernames as identity.
 - Repository-picker callbacks contain a random request ID and bounded index,
   not a client-supplied path. They are bound to the configured user, group,
   topic, and Telegram message and expire after 15 minutes.
+- `/prune legacy` only selects closed pre-upgrade Codex/Claude topics and
+  requires an inline confirmation bound to the configured user, group, topic,
+  and Telegram message. The request expires after 15 minutes, and every topic
+  is revalidated against live agents before irreversible deletion.
 - Agent launch is restricted to installed Codex and Claude executables selected
   by the bridge. The absolute executable path is typed literally into a new
   detached tmux pane; neither repository names nor Telegram text are evaluated
