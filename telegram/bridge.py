@@ -32,6 +32,10 @@ from telegram.repositories import (  # noqa: E402
     RepositoryCatalog,
     RepositoryCatalogError,
 )
+from telegram.sessions import (  # noqa: E402
+    SessionMetadataResolver,
+    valid_conversation_id,
+)
 
 
 LOG = logging.getLogger("tmux-telegram-bridge")
@@ -39,6 +43,7 @@ TELEGRAM_TEXT_LIMIT = 4096
 LOCAL_PROMPT_CHUNK_LIMIT = 3900
 MAX_INPUT_LENGTH = 4096
 REPOSITORY_RESULT_LIMIT = 8
+RESUME_RESULT_LIMIT = 8
 LAUNCH_REQUEST_TTL = 900
 LAUNCH_ATTENTION_AFTER = 60
 LAUNCH_EXPIRE_AFTER = 600
@@ -123,6 +128,16 @@ class LaunchTarget:
     pane_id: str
     session: str
     window_index: str
+
+
+@dataclass(frozen=True)
+class ResumeCandidate:
+    topic_key: str
+    agent: str
+    conversation_id: str
+    working_directory: Path
+    label: str
+    missing_since: float
 
 
 def parse_agent_rows(output: str) -> list[AgentPane]:
@@ -338,17 +353,15 @@ class TmuxClient:
                 return candidate, True
         raise TmuxError("Could not allocate a unique tmux session name")
 
-    def launch_agent(self, repository: Path, agent: str) -> LaunchTarget:
-        repository = Path(repository).resolve()
-        if not repository.is_dir():
-            raise TmuxError("The selected repository directory no longer exists")
-        executable = self._agent_executable(agent)
-        if executable is None:
-            raise TmuxError(f"{agent.title()} is not installed for this service")
-
-        session, exists = self._launch_session_name(repository)
+    def _create_agent_target(
+        self,
+        repository: Path,
+        agent: str,
+        session: str,
+        existing_session: bool,
+    ) -> LaunchTarget:
         output_format = "#{pane_id}\t#{session_name}\t#{window_index}"
-        if exists:
+        if existing_session:
             create_args = [
                 self.tmux_bin,
                 "new-window",
@@ -378,44 +391,123 @@ class TmuxClient:
                 "-c",
                 str(repository),
             ]
+        created = subprocess.run(
+            create_args,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        fields = created.stdout.strip().split("\t")
+        if len(fields) != 3 or not fields[0].startswith("%"):
+            raise TmuxError("tmux returned no pane for the new agent")
+        return LaunchTarget(fields[0], fields[1], fields[2])
+
+    def _start_agent_command(
+        self, target: LaunchTarget, command: list[str]
+    ) -> None:
+        subprocess.run(
+            [
+                self.tmux_bin,
+                "send-keys",
+                "-t",
+                target.pane_id,
+                "-l",
+                shlex.join(command),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=5,
+        )
+        subprocess.run(
+            [self.tmux_bin, "send-keys", "-t", target.pane_id, "Enter"],
+            check=True,
+            capture_output=True,
+            timeout=5,
+        )
+
+    def launch_agent(self, repository: Path, agent: str) -> LaunchTarget:
+        repository = Path(repository).resolve()
+        if not repository.is_dir():
+            raise TmuxError("The selected repository directory no longer exists")
+        executable = self._agent_executable(agent)
+        if executable is None:
+            raise TmuxError(f"{agent.title()} is not installed for this service")
+
         try:
-            created = subprocess.run(
-                create_args,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            fields = created.stdout.strip().split("\t")
-            if len(fields) != 3 or not fields[0].startswith("%"):
-                raise TmuxError("tmux returned no pane for the new agent")
-            target = LaunchTarget(fields[0], fields[1], fields[2])
-            subprocess.run(
-                [
-                    self.tmux_bin,
-                    "send-keys",
-                    "-t",
-                    target.pane_id,
-                    "-l",
-                    shlex.quote(executable),
-                ],
-                check=True,
-                capture_output=True,
-                timeout=5,
-            )
-            subprocess.run(
-                [self.tmux_bin, "send-keys", "-t", target.pane_id, "Enter"],
-                check=True,
-                capture_output=True,
-                timeout=5,
-            )
+            session, exists = self._launch_session_name(repository)
+            target = self._create_agent_target(repository, agent, session, exists)
+            self._start_agent_command(target, [executable])
         except TmuxError:
             raise
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            raise TmuxError(
-                f"Could not start {agent.title()} in tmux"
-            ) from exc
+            raise TmuxError(f"Could not start {agent.title()} in tmux") from exc
         return target
+
+    def _resume_session_name(
+        self, working_directory: Path, conversation_id: str
+    ) -> str:
+        slug = re.sub(
+            r"[^A-Za-z0-9_-]+", "-", working_directory.name
+        ).strip("-_")
+        slug = slug or "conversation"
+        base = f"{slug[:30]}-{conversation_id[:8]}"
+        for suffix in range(100):
+            candidate = base if suffix == 0 else f"{base[:37]}-{suffix}"
+            if not self._session_exists(candidate):
+                return candidate
+        raise TmuxError("Could not allocate a dedicated resume session")
+
+    def resume_agent(
+        self, working_directory: Path, agent: str, conversation_id: str
+    ) -> LaunchTarget:
+        working_directory = Path(working_directory).resolve()
+        if not working_directory.is_dir():
+            raise TmuxError("The conversation working directory no longer exists")
+        if not valid_conversation_id(conversation_id):
+            raise TmuxError("The conversation has no valid resumable session ID")
+        executable = self._agent_executable(agent)
+        if executable is None:
+            raise TmuxError(f"{agent.title()} is not installed for this service")
+        command = (
+            [executable, "resume", conversation_id]
+            if agent == "codex"
+            else [executable, "--resume", conversation_id]
+        )
+        try:
+            session = self._resume_session_name(working_directory, conversation_id)
+            target = self._create_agent_target(
+                working_directory, agent, session, False
+            )
+            self._start_agent_command(target, command)
+        except TmuxError:
+            raise
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise TmuxError(f"Could not resume {agent.title()} in tmux") from exc
+        return target
+
+    def pane_directory(self, pane: AgentPane) -> Path:
+        try:
+            result = subprocess.run(
+                [
+                    self.tmux_bin,
+                    "display-message",
+                    "-p",
+                    "-t",
+                    pane.pane_id,
+                    "#{pane_dead}\t#{pane_id}\t#{pane_current_path}",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise TmuxError("Could not inspect the agent pane directory") from exc
+        fields = result.stdout.rstrip("\n").split("\t", 2)
+        if result.returncode != 0 or len(fields) != 3 or fields[:2] != ["0", pane.pane_id]:
+            raise TmuxError("The agent pane is no longer live")
+        return Path(fields[2])
 
     def pane_exists(self, pane_id: str) -> bool:
         if not pane_id.startswith("%"):
@@ -731,6 +823,7 @@ class Bridge:
         choice_store: ChoiceStore | None = None,
         repository_root: Path | None = None,
         repository_catalog: RepositoryCatalog | None = None,
+        session_metadata: SessionMetadataResolver | None = None,
     ) -> None:
         self.telegram = telegram
         self.tmux = tmux
@@ -743,6 +836,7 @@ class Bridge:
         self.repository_catalog = repository_catalog or RepositoryCatalog(
             repository_root or Path.home()
         )
+        self.session_metadata = session_metadata or SessionMetadataResolver()
         self.state = self._load_state()
         self._bot_id: int | None = None
 
@@ -806,6 +900,202 @@ class Bridge:
         if label == ".":
             label = self.repository_catalog.root.name
         return re.sub(r"[\x00-\x1f\x7f]+", " ", label).strip() or path.name
+
+    @staticmethod
+    def _conversation_topic_parts(key: str) -> tuple[str, str] | None:
+        parts = key.split("\x1f")
+        if (
+            len(parts) != 3
+            or parts[0] != "conversation"
+            or parts[1] not in {"codex", "claude"}
+            or not valid_conversation_id(parts[2])
+        ):
+            return None
+        return parts[1], parts[2]
+
+    def _live_pane_directory(self, pane: AgentPane) -> Path | None:
+        if not pane.conversation_id:
+            return None
+        try:
+            return self.repository_catalog.validate_directory(
+                self.tmux.pane_directory(pane)
+            )
+        except (AttributeError, RepositoryCatalogError, TmuxError) as exc:
+            LOG.debug("Could not record working directory for %s: %s", pane.label, exc)
+            return None
+
+    def _record_working_directory(
+        self,
+        agent: str,
+        conversation_id: str,
+        record: dict[str, Any],
+        metadata_cwd: Path | None = None,
+    ) -> Path | None:
+        stored = record.get("working_directory")
+        if isinstance(stored, str) and stored:
+            try:
+                return self.repository_catalog.validate_directory(Path(stored))
+            except RepositoryCatalogError:
+                pass
+        cwd = metadata_cwd or self.session_metadata.resolve(agent, conversation_id)
+        if cwd is None:
+            return None
+        try:
+            working_directory = self.repository_catalog.validate_directory(cwd)
+        except RepositoryCatalogError:
+            return None
+        record["working_directory"] = str(working_directory)
+        self._save_state()
+        return working_directory
+
+    def _resume_candidates(
+        self, query: str, panes: list[AgentPane]
+    ) -> tuple[list[ResumeCandidate], int, int]:
+        live_keys = {pane.topic_key for pane in panes if pane.identity_ready}
+        normalized = " ".join(query.casefold().split())
+        terms = normalized.split()
+        candidates: list[ResumeCandidate] = []
+        unavailable = 0
+        available_agents = set(self.tmux.available_agents())
+        for key, record in self._topics().items():
+            parts = self._conversation_topic_parts(key)
+            if (
+                parts is None
+                or key in live_keys
+                or not isinstance(record, dict)
+                or record.get("closed") is not True
+            ):
+                continue
+            agent, conversation_id = parts
+            if agent not in available_agents:
+                unavailable += 1
+                continue
+            metadata_cwd = self.session_metadata.resolve(agent, conversation_id)
+            working_directory = self._record_working_directory(
+                agent, conversation_id, record, metadata_cwd
+            )
+            if metadata_cwd is None or working_directory is None:
+                unavailable += 1
+                continue
+            label = str(
+                record.get("name")
+                or record.get("label")
+                or working_directory.name
+            )
+            haystack = " ".join(
+                (
+                    label,
+                    self._repository_label(working_directory),
+                    agent,
+                    conversation_id,
+                )
+            ).casefold()
+            if terms and not all(term in haystack for term in terms):
+                continue
+            candidates.append(
+                ResumeCandidate(
+                    topic_key=key,
+                    agent=agent,
+                    conversation_id=conversation_id,
+                    working_directory=working_directory,
+                    label=label,
+                    missing_since=float(record.get("missing_since", 0)),
+                )
+            )
+        candidates.sort(key=lambda candidate: candidate.missing_since, reverse=True)
+        total = len(candidates)
+        return candidates[:RESUME_RESULT_LIMIT], total, unavailable
+
+    @staticmethod
+    def _resume_keyboard(
+        request_id: str, candidates: list[ResumeCandidate]
+    ) -> dict[str, Any]:
+        rows: list[list[dict[str, str]]] = []
+        for index, candidate in enumerate(candidates):
+            label = f"{candidate.label} · {candidate.conversation_id[:8]}"
+            rows.append(
+                [
+                    {
+                        "text": trim_label(label, 60),
+                        "callback_data": f"rs:r:{request_id}:{index}",
+                    }
+                ]
+            )
+        rows.append([{"text": "Cancel", "callback_data": f"rs:x:{request_id}"}])
+        return {"inline_keyboard": rows}
+
+    def _start_resume_picker(self, message: dict[str, Any], query: str) -> None:
+        query = " ".join(query.split())
+        if len(query) > 100:
+            self._reply(message, "Conversation searches are limited to 100 characters.")
+            return
+        try:
+            panes = self.tmux.agents()
+        except TmuxError as exc:
+            self._reply(message, f"Could not inspect live conversations: {exc}")
+            return
+        candidates, total, unavailable = self._resume_candidates(query, panes)
+        if not candidates:
+            suffix = f" matching “{query}”" if query else ""
+            unavailable_text = (
+                f" {unavailable} closed conversation(s) could not be matched to "
+                "available local session metadata and a trusted working directory."
+                if unavailable
+                else ""
+            )
+            self._reply(
+                message,
+                f"No resumable closed conversations found{suffix}.{unavailable_text}",
+            )
+            return
+
+        request_id = secrets.token_hex(6)
+        search_text = f" matching “{query}”" if query else ""
+        more = (
+            f"\n\nShowing {len(candidates)} of {total}; use /resume SEARCH to narrow it."
+            if total > len(candidates)
+            else ""
+        )
+        unavailable_text = (
+            f"\n\n{unavailable} other closed conversation(s) are unavailable because "
+            "their local session metadata or working directory could not be resolved."
+            if unavailable
+            else ""
+        )
+        chat = message.get("chat") or {}
+        thread_id = message.get("message_thread_id")
+        sent = self._send_message(
+            int(chat["id"]),
+            f"Resume a closed conversation{search_text}.{more}{unavailable_text}",
+            int(thread_id) if isinstance(thread_id, int) else None,
+            disable_notification=True,
+            reply_markup=self._resume_keyboard(request_id, candidates),
+        )
+        message_id = sent.get("message_id")
+        if not isinstance(message_id, int):
+            raise TelegramError("Telegram resume picker has no message id")
+        self._launch_requests()[request_id] = {
+            "id": request_id,
+            "kind": "resume",
+            "state": "choosing_resume",
+            "created_at": time.time(),
+            "query": query,
+            "candidates": [
+                {
+                    "topic_key": candidate.topic_key,
+                    "agent": candidate.agent,
+                    "conversation_id": candidate.conversation_id,
+                    "working_directory": str(candidate.working_directory),
+                    "label": candidate.label,
+                }
+                for candidate in candidates
+            ],
+            "chat_id": int(chat["id"]),
+            "thread_id": int(thread_id) if isinstance(thread_id, int) else None,
+            "message_id": message_id,
+        }
+        self._prune_launch_requests()
+        self._save_state()
 
     @staticmethod
     def _launch_keyboard(
@@ -1190,11 +1480,16 @@ class Bridge:
         # creation: tmux window names are volatile, conversations can move to
         # another pane, and users may choose a better title in Telegram. The
         # full conversation identity below remains authoritative for routing.
+        pane_changed = record.get("pane_id") != pane.pane_id
         record["pane_id"] = pane.pane_id
         record["label"] = pane.label
         record["conversation_id"] = pane.conversation_id
         record["closed"] = False
         record.pop("missing_since", None)
+        if pane_changed or not isinstance(record.get("working_directory"), str):
+            working_directory = self._live_pane_directory(pane)
+            if working_directory is not None:
+                record["working_directory"] = str(working_directory)
         self._save_state()
         return record
 
@@ -1735,18 +2030,46 @@ class Bridge:
                 None,
             )
             if pane is not None:
+                expected_conversation_id = (
+                    str(launch.get("conversation_id") or "")
+                    if launch.get("kind") == "resume"
+                    else ""
+                )
+                if (
+                    expected_conversation_id
+                    and pane.conversation_id != expected_conversation_id
+                ):
+                    launch["state"] = "failed"
+                    launch["finished_at"] = now
+                    self._edit_launch_message(
+                        launch,
+                        f"{agent.title()} started a different conversation than "
+                        f"{expected_conversation_id[:8]}; the original topic was not reopened.\n"
+                        f"Inspect tmux target {launch.get('tmux_target')}.",
+                    )
+                    changed = True
+                    continue
                 topic = self._topics().get(pane.topic_key)
                 if isinstance(topic, dict) and isinstance(topic.get("thread_id"), int):
                     launch["state"] = "ready"
                     launch["conversation_id"] = pane.conversation_id
                     launch["topic_key"] = pane.topic_key
                     launch["finished_at"] = now
-                    self._edit_launch_message(
-                        launch,
-                        f"✓ {agent.title()} is ready in {self._repository_label(Path(str(launch['repository'])))}.\n"
-                        f"Topic: {pane.topic_name}\n"
-                        f"tmux target: {launch.get('tmux_target')}",
-                    )
+                    if launch.get("kind") == "resume":
+                        ready_text = (
+                            f"✓ {agent.title()} conversation "
+                            f"{pane.conversation_id[:8]} resumed.\n"
+                            f"Telegram topic reopened: {pane.topic_name}\n"
+                            f"Dedicated tmux session: {launch.get('session')}"
+                        )
+                    else:
+                        ready_text = (
+                            f"✓ {agent.title()} is ready in "
+                            f"{self._repository_label(Path(str(launch['repository'])))}.\n"
+                            f"Topic: {pane.topic_name}\n"
+                            f"tmux target: {launch.get('tmux_target')}"
+                        )
+                    self._edit_launch_message(launch, ready_text)
                     changed = True
                     continue
 
@@ -1929,6 +2252,148 @@ class Bridge:
             return None
         return launch
 
+    def _handle_resume_callback(self, callback: dict[str, Any], data: str) -> None:
+        callback_id = callback.get("id")
+        select_match = re.fullmatch(r"rs:r:([a-f0-9]{12}):([0-7])", data)
+        cancel_match = re.fullmatch(r"rs:x:([a-f0-9]{12})", data)
+        request_id = (
+            select_match.group(1)
+            if select_match
+            else cancel_match.group(1)
+            if cancel_match
+            else ""
+        )
+        launch = self._launch_request_for_callback(callback, request_id)
+        if launch is None or launch.get("kind") != "resume":
+            self._answer_callback(
+                callback_id, "This resume request expired.", show_alert=True
+            )
+            return
+
+        if cancel_match:
+            if launch.get("state") != "choosing_resume":
+                self._answer_callback(callback_id, "This conversation already started.")
+                return
+            launch["state"] = "cancelled"
+            launch["finished_at"] = time.time()
+            self._save_state()
+            self._answer_callback(callback_id, "Cancelled.")
+            self._edit_launch_message(launch, "Conversation resume cancelled.")
+            return
+
+        if select_match is None or launch.get("state") != "choosing_resume":
+            self._answer_callback(callback_id, "This conversation already started.")
+            return
+        candidates = launch.get("candidates")
+        index = int(select_match.group(2))
+        if not isinstance(candidates, list) or index >= len(candidates):
+            self._answer_callback(
+                callback_id, "Conversation is no longer available.", show_alert=True
+            )
+            return
+        selected = candidates[index]
+        if not isinstance(selected, dict):
+            self._answer_callback(
+                callback_id, "Conversation is no longer available.", show_alert=True
+            )
+            return
+        topic_key = selected.get("topic_key")
+        parts = (
+            self._conversation_topic_parts(topic_key)
+            if isinstance(topic_key, str)
+            else None
+        )
+        record = self._topics().get(topic_key) if isinstance(topic_key, str) else None
+        if parts is None or not isinstance(record, dict) or record.get("closed") is not True:
+            self._answer_callback(
+                callback_id,
+                "That conversation is no longer closed and resumable.",
+                show_alert=True,
+            )
+            return
+        agent, conversation_id = parts
+        try:
+            panes = self.tmux.agents()
+        except TmuxError as exc:
+            self._answer_callback(
+                callback_id, f"Could not inspect live conversations: {exc}", show_alert=True
+            )
+            return
+        if any(
+            pane.identity_ready and pane.topic_key == topic_key for pane in panes
+        ):
+            launch["state"] = "cancelled"
+            launch["finished_at"] = time.time()
+            self._save_state()
+            self._answer_callback(callback_id, "Conversation is already running.")
+            self._edit_launch_message(
+                launch, "That conversation is already active; no duplicate was started."
+            )
+            return
+        if self.session_metadata.resolve(agent, conversation_id) is None:
+            self._answer_callback(
+                callback_id,
+                "The local agent session is no longer available.",
+                show_alert=True,
+            )
+            return
+        working_directory = self._record_working_directory(
+            agent, conversation_id, record
+        )
+        if working_directory is None:
+            self._answer_callback(
+                callback_id,
+                "The conversation working directory is no longer available.",
+                show_alert=True,
+            )
+            return
+
+        launch.update(
+            {
+                "state": "launching",
+                "agent": agent,
+                "conversation_id": conversation_id,
+                "topic_key": topic_key,
+                "working_directory": str(working_directory),
+                "launch_started_at": time.time(),
+            }
+        )
+        self._save_state()
+        label = self._repository_label(working_directory)
+        self._answer_callback(callback_id, f"Resuming {agent.title()}…")
+        self._edit_launch_message(
+            launch,
+            f"⏳ Resuming {agent.title()} conversation {conversation_id[:8]} in "
+            f"a dedicated tmux session for {label}…",
+        )
+        try:
+            target = self.tmux.resume_agent(
+                working_directory, agent, conversation_id
+            )
+        except TmuxError as exc:
+            launch["state"] = "failed"
+            launch["finished_at"] = time.time()
+            launch["error"] = str(exc)
+            self._save_state()
+            self._edit_launch_message(launch, f"Could not resume the conversation: {exc}")
+            return
+        launch.update(
+            {
+                "state": "starting",
+                "pane_id": target.pane_id,
+                "session": target.session,
+                "window_index": target.window_index,
+                "tmux_target": f"{target.session}:{target.window_index}",
+            }
+        )
+        self._save_state()
+        self._edit_launch_message(
+            launch,
+            f"⏳ {agent.title()} conversation {conversation_id[:8]} is starting.\n"
+            f"Dedicated tmux session: {target.session}\n\n"
+            "Waiting for the original Telegram topic to reopen…",
+        )
+
     def _handle_launch_callback(self, callback: dict[str, Any], data: str) -> None:
         callback_id = callback.get("id")
         repo_match = re.fullmatch(r"nl:r:([a-f0-9]{12}):([0-7])", data)
@@ -2072,6 +2537,9 @@ class Bridge:
         if isinstance(data, str) and data.startswith("nl:"):
             self._handle_launch_callback(callback, data)
             return
+        if isinstance(data, str) and data.startswith("rs:"):
+            self._handle_resume_callback(callback, data)
+            return
         match = (
             re.fullmatch(r"mq:([a-f0-9]{24}):([0-5]|c)", data)
             if isinstance(data, str)
@@ -2194,6 +2662,7 @@ class Bridge:
                 "/sync — reconcile live agent topics\n"
                 "/status — show agent states\n"
                 "/new [SEARCH] — start an agent in a repository\n"
+                "/resume [SEARCH] — reopen a closed conversation\n"
                 "/send TEXT — send TEXT to this topic's agent\n\n"
                 "Ordinary text and agent slash commands are sent literally to "
                 "the agent mapped to the current topic. When an agent asks one "
@@ -2202,6 +2671,18 @@ class Bridge:
             return
 
         thread_id = message.get("message_thread_id")
+        if command == "/resume":
+            if isinstance(thread_id, int):
+                topic_key, _ = self._topic_for_thread(thread_id)
+                if topic_key is not None:
+                    self._reply(
+                        message,
+                        "Resume conversations from the Control topic so the picker "
+                        "does not interrupt an agent conversation.",
+                    )
+                    return
+            self._start_resume_picker(message, remainder)
+            return
         if command == "/new":
             if isinstance(thread_id, int):
                 topic_key, _ = self._topic_for_thread(thread_id)

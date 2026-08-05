@@ -106,3 +106,13 @@ Control and compare with the final `conversation_id` field from
 `bin/muxpager-agent-list`. If the field is briefly empty after upgrading,
 submit a prompt or wait for the next hook event; delivery remains paused rather
 than falling back to pane position.
+
+## `/resume` does not list a closed conversation
+
+Only closed modern Codex/Claude topics with an exact conversation UUID can be
+resumed. The matching local agent session metadata must still exist, and its
+original working directory must exist beneath `TMUX_TELEGRAM_REPO_ROOT`.
+Legacy position-based topics and conversations created outside that configured
+root are intentionally excluded. Narrow searches match the saved topic title,
+working directory, agent, and full conversation ID; retry `/resume` without a
+search term to list the most recent eligible conversations.

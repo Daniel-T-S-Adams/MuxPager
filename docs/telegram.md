@@ -109,6 +109,7 @@ The Control topic provides:
 - `/sync` — reconcile all live agent topics now.
 - `/status` — list current agents and states.
 - `/new [SEARCH]` — find a repository and start a new agent conversation.
+- `/resume [SEARCH]` — find and resume a closed agent conversation.
 - `/help` — display the short command guide.
 
 ## Starting an agent from Telegram
@@ -138,6 +139,35 @@ root. Discovery includes directories with a `.git` directory or file, skips
 common dependency/cache trees, never follows directory symlinks, and does not
 accept arbitrary paths supplied through Telegram.
 
+## Resuming a conversation from Telegram
+
+Send `/resume` in Control to list up to eight recent closed Codex or Claude
+conversations. Add case-insensitive search terms to match a topic title,
+working directory, agent type, or conversation ID:
+
+```text
+/resume muxpager
+```
+
+Tap a conversation to start its exact saved agent session. Every resume creates
+a new detached tmux session named from the working directory and the first
+eight characters of the conversation ID; it never adds a window to an existing
+tmux session. MuxPager refuses to create a duplicate if that conversation became
+live after the picker opened.
+
+The picker callback contains only a random request ID and bounded result index.
+Before launching, the bridge revalidates the configured user, group, topic,
+message, exact locally stored conversation ID, local Codex/Claude session
+metadata, and original working directory beneath `TMUX_TELEGRAM_REPO_ROOT`.
+Paths supplied through Telegram are never accepted. Picker buttons expire after
+15 minutes.
+
+When the resumed CLI reports the expected conversation ID, MuxPager reopens the
+original Telegram topic and marks the Control message ready. A mismatched ID,
+missing local session, unavailable working directory, early process exit, or
+startup timeout is reported in Control. Legacy position-based topics cannot be
+resumed because they do not identify an exact agent conversation.
+
 ## Lifecycle
 
 When an agent conversation exits but the pane returns to Bash:
@@ -152,6 +182,12 @@ Resuming the same Codex or Claude session ID reopens that topic regardless of
 which tmux pane now runs it. Starting a new agent conversation in the same pane
 creates a new topic. Reopening preserves Telegram history because the agent CLI
 resume operation restores the same underlying conversation.
+
+While a conversation is live, the bridge saves its validated working directory
+in the private topic mapping. For older mappings, `/resume` backfills that value
+from local Codex or Claude session metadata. The directory must still exist
+beneath `TMUX_TELEGRAM_REPO_ROOT`; sessions created outside that boundary are
+not offered remotely.
 
 During an upgrade, an open position-based topic is adopted by the live
 conversation when its next hook event supplies a session ID. Until then,

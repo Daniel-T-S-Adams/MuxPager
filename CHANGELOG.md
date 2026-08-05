@@ -7,6 +7,9 @@ All notable changes to MuxPager are documented here. The project uses
 
 ### Added
 
+- `/resume [SEARCH]` in Telegram Control, with bounded closed-conversation
+  selection, safe local metadata backfill, a dedicated tmux session, exact
+  Codex/Claude resume syntax, and automatic reopening of the original topic.
 - `/new [SEARCH]` in Telegram Control, with a bounded repository picker rooted
   at the service user's home (`/root` on this server), Codex/Claude selection,
   detached tmux startup, and automatic handoff to the new conversation topic.

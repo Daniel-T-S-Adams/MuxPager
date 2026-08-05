@@ -49,6 +49,14 @@ or Telegram usernames as identity.
 - Repository-picker callbacks contain a random request ID and bounded index,
   not a client-supplied path. They are bound to the configured user, group,
   topic, and Telegram message and expire after 15 minutes.
+- `/resume` candidates come only from closed local topic mappings and local
+  Codex/Claude session metadata. The working directory is revalidated beneath
+  the configured root, the conversation identity must be a UUID, and callbacks
+  are bound to the configured user, group, topic, and Telegram message for 15
+  minutes. Telegram cannot supply a resume ID, executable, or filesystem path.
+- A resume always creates a dedicated detached tmux session. The typed command
+  contains only the trusted executable, fixed agent resume syntax, and validated
+  local conversation ID; the reported live ID must match before handoff.
 - Agent launch is restricted to installed Codex and Claude executables selected
   by the bridge. The absolute executable path is typed literally into a new
   detached tmux pane; neither repository names nor Telegram text are evaluated
