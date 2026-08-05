@@ -57,6 +57,10 @@ or Telegram usernames as identity.
 - A resume always creates a dedicated detached tmux session. The typed command
   contains only the trusted executable, fixed agent resume syntax, and validated
   local conversation ID; the reported live ID must match before handoff.
+- `/prune legacy` only selects closed pre-upgrade Codex/Claude topics and
+  requires an inline confirmation bound to the configured user, group, topic,
+  and Telegram message. The request expires after 15 minutes, and every topic
+  is revalidated against live agents before irreversible deletion.
 - Agent launch is restricted to installed Codex and Claude executables selected
   by the bridge. The absolute executable path is typed literally into a new
   detached tmux pane; neither repository names nor Telegram text are evaluated

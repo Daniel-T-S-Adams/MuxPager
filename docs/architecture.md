@@ -123,6 +123,13 @@ The bridge polls Telegram and reconciles tmux agent panes every few seconds.
 6. An incoming message is delivered only after the live pane mapping and
    `pane_dead` status are revalidated.
 
+Closed position-based Codex/Claude topics from releases before conversation
+identity are retained as history until the user sends `/prune legacy` in
+Control and confirms the irreversible deletion. The bridge snapshots eligible
+topics for that short-lived request, revalidates that none became active, calls
+Telegram's topic-deletion API, and removes each local mapping only after the
+topic is deleted or confirmed already missing.
+
 ## Choice-question lifecycle
 
 MuxPager registers one local MCP tool named `ask_choice` with Codex and Claude.

@@ -233,6 +233,9 @@ In the Telegram `Control` topic:
   the selected repository and opens its topic.
 - `/resume [SEARCH]` finds a closed conversation, starts its exact agent session
   in a new dedicated tmux session, and reopens its existing Telegram topic.
+- `/prune legacy` previews closed position-based Codex/Claude topics left by an
+  older MuxPager release, then offers an explicit confirmation before
+  permanently deleting their Telegram history and local mappings.
 - `/help` displays the bot command guide.
 
 ## How it works

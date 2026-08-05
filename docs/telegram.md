@@ -110,6 +110,8 @@ The Control topic provides:
 - `/status` — list current agents and states.
 - `/new [SEARCH]` — find a repository and start a new agent conversation.
 - `/resume [SEARCH]` — find and resume a closed agent conversation.
+- `/prune legacy` — preview and delete closed pre-upgrade topics after
+  confirmation.
 - `/help` — display the short command guide.
 
 ## Starting an agent from Telegram
@@ -192,6 +194,15 @@ not offered remotely.
 During an upgrade, an open position-based topic is adopted by the live
 conversation when its next hook event supplies a session ID. Until then,
 Telegram routing is visibly paused. Closed legacy topics are not reused.
+
+To remove those closed pre-upgrade topics, send `/prune legacy` in Control.
+MuxPager shows the exact count and requires a confirmation button before it
+calls Telegram's topic-deletion API. Deletion permanently erases the topic
+history. Modern conversation topics, open legacy topics still eligible for
+migration, and Devin's supported position-based topics are excluded. A topic is
+removed from local bridge state only after Telegram deletes it; a topic already
+missing from Telegram is treated as successfully cleaned. API failures remain
+mapped so the command can retry them later.
 
 ## End-to-end test
 
