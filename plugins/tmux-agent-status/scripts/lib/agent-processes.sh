@@ -109,14 +109,11 @@ agent_name_from_args() {
 
     # Claude Code's native installer stores each release as
     # .../claude/versions/<version> behind a `claude` symlink. A process started
-    # through the resolved path has the version number as its basename.
-    case "$executable" in
-        */claude/versions/*)
-            if [ "${executable%/*}" != "${executable%/claude/versions/*}/claude/versions" ]; then
-                return 1
-            fi
-            candidate="claude"
-            ;;
+    # through the resolved path has the version number as its basename. Only a
+    # file directly inside that directory is renamed; every other path keeps
+    # the basename rule above.
+    case "${executable%/*}" in
+        */claude/versions) candidate="claude" ;;
     esac
 
     case "$candidate" in

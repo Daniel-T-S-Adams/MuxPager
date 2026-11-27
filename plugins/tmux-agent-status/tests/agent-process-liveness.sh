@@ -116,5 +116,9 @@ assert_agent_name "/home/dev/.local/share/claude/versions/2.1.332 --resume abc" 
 assert_agent_name "/opt/claude/versions/2.1.332/helper" ""
 assert_agent_name "cat /root/.local/share/claude/versions/2.1.332" ""
 assert_agent_name "/opt/codex/versions/1.0" ""
+# The rule only adds a match. An agent binary nested deeper under such a
+# directory is still found by its own name.
+assert_agent_name "/opt/claude/versions/1.0/bin/claude" "claude"
+assert_agent_name "/opt/claude/versions/1.0/bin/codex" "codex"
 
 echo "agent process liveness checks passed"
