@@ -286,7 +286,12 @@ class TmuxClient:
         ]
         for candidate in candidates:
             if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
-                return str(Path(candidate).resolve())
+                # Make the path absolute but keep the name it was found under.
+                # Claude Code's native installer points ~/.local/bin/claude at
+                # .../claude/versions/<version>; launching the resolved target
+                # names the process after a version number, and the agent
+                # listing then cannot tell that the pane is running Claude.
+                return os.path.abspath(candidate)
         return None
 
     def available_agents(self) -> list[str]:

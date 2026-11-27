@@ -96,4 +96,29 @@ for terminal_state in T t Z X x; do
     fi
 done
 
+assert_agent_name() {
+    local args="$1" expected="$2" actual
+    actual=$(agent_name_from_args "$args" || true)
+    if [ "$actual" != "$expected" ]; then
+        echo "Assertion failed: '$args' should be detected as '${expected:-no agent}', got '${actual:-no agent}'" >&2
+        exit 1
+    fi
+}
+
+# Claude Code's native installer runs each release from
+# .../claude/versions/<version>. A process started through that resolved path
+# (rather than the `claude` symlink) is still Claude.
+assert_agent_name "/root/.local/bin/claude" "claude"
+assert_agent_name "/root/.local/share/claude/versions/2.1.332" "claude"
+assert_agent_name "/home/dev/.local/share/claude/versions/2.1.332 --resume abc" "claude"
+# Only the release binary itself counts: not a file below it, not a path merely
+# passed as an argument, and not another tool with a versions directory.
+assert_agent_name "/opt/claude/versions/2.1.332/helper" ""
+assert_agent_name "cat /root/.local/share/claude/versions/2.1.332" ""
+assert_agent_name "/opt/codex/versions/1.0" ""
+# The rule only adds a match. An agent binary nested deeper under such a
+# directory is still found by its own name.
+assert_agent_name "/opt/claude/versions/1.0/bin/claude" "claude"
+assert_agent_name "/opt/claude/versions/1.0/bin/codex" "codex"
+
 echo "agent process liveness checks passed"

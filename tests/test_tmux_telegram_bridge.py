@@ -181,6 +181,26 @@ class TelegramBridgeTests(unittest.TestCase):
         )
         self.assertFalse(any(call == ["bash", "-c"] for call in calls))
 
+    def test_agent_executable_keeps_the_symlink_name(self) -> None:
+        # Claude Code's native installer links ~/.local/bin/claude to
+        # .../claude/versions/<version>. Launching the resolved target would
+        # name the process after the version, hiding it from agent detection.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            release = root / "share" / "claude" / "versions" / "2.1.332"
+            release.parent.mkdir(parents=True)
+            release.write_text("#!/bin/sh\n", encoding="utf-8")
+            release.chmod(0o755)
+            link = root / "bin" / "claude"
+            link.parent.mkdir()
+            link.symlink_to(release)
+
+            with mock.patch.object(bridge.shutil, "which", return_value=str(link)):
+                executable = bridge.TmuxClient._agent_executable("claude")
+
+        self.assertEqual(str(link), executable)
+        self.assertEqual("claude", Path(executable).name)
+
     def test_resume_agent_uses_a_dedicated_session_and_exact_cli_id(self) -> None:
         conversation_id = "019fba20-0898-7383-b7df-a686a55fae84"
         for agent, expected_arguments in (
