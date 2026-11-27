@@ -46,6 +46,14 @@ All notable changes to MuxPager are documented here. The project uses
   first-time readers, and labeled Telegram setup steps by whether they happen in
   Telegram or in the terminal.
 
+### Fixed
+
+- The Telegram topic of a live but quiet agent no longer closes on its own.
+  The agent listing took a process's start time from the mtime of
+  `/proc/<pid>`, which inside the bridge's systemd sandbox is far later than
+  the real start, so the conversation identity looked stale. It now reads the
+  true start time from `/proc/<pid>/stat`.
+
 ## [0.1.0] - 2026-07-23
 
 ### Added

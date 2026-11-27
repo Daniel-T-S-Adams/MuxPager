@@ -34,6 +34,20 @@ assert_eq() {
     fi
 }
 
+# tmux reads a pane's path from its child process. That process has not always
+# changed into its start directory by the time the session-creating command
+# returns, so wait for the path to settle instead of sampling it once.
+assert_pane_path() {
+    local session="$1" expected="$2" message="$3" actual="" _attempt
+    for _attempt in $(seq 1 50); do
+        actual="$(tmux_test list-panes -t "=$session" \
+            -F '#{pane_current_path}' 2>/dev/null || true)"
+        [ "$actual" = "$expected" ] && return 0
+        sleep 0.1
+    done
+    assert_eq "$actual" "$expected" "$message"
+}
+
 WORKSPACE="$TEST_ROOT/workspace with spaces"
 SOURCE_REPO="$WORKSPACE/MuxPager"
 TARGET_REPO="$WORKSPACE/tig-swarm-demo"
@@ -67,8 +81,7 @@ assert_eq \
     "$(git -C "$TARGET_WORKTREE" branch --show-current)" \
     "muxpager/swarm-feature" \
     "an explicitly selected repository should own the new branch"
-assert_eq \
-    "$(tmux_test list-panes -t '=Swarm_Feature' -F '#{pane_current_path}')" \
+assert_pane_path Swarm_Feature \
     "$TARGET_WORKTREE" \
     "the selected repository worktree should be the new session directory"
 if [ -e "$SOURCE_REPO/.muxpager" ]; then

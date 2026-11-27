@@ -35,10 +35,12 @@ while IFS=$'\t' read -r pane_id session window_index window_name pane_index pane
         # A crashed agent may not emit SessionEnd before another process of the
         # same type reuses its pane. On Linux, suppress an identity older than
         # the detected agent process until SessionStart writes the new one.
+        # When the real start time is unavailable the identity is kept: a
+        # guessed start time would close the topic of a live conversation.
         proc_root="${MUXPAGER_PROC_ROOT:-/proc}"
-        if [ -n "$conversation_id" ] && [ -d "$proc_root/$match_pid" ]; then
+        if [ -n "$conversation_id" ]; then
             identity_mtime=$(stat -c %Y "$identity_file" 2>/dev/null || true)
-            process_started=$(stat -c %Y "$proc_root/$match_pid" 2>/dev/null || true)
+            process_started=$(agent_process_start_epoch "$match_pid" "$proc_root" 2>/dev/null || true)
             if [[ "$identity_mtime" =~ ^[0-9]+$ ]] && \
                [[ "$process_started" =~ ^[0-9]+$ ]] && \
                [ "$identity_mtime" -lt "$process_started" ]; then

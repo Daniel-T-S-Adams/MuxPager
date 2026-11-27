@@ -119,6 +119,49 @@ agent_name_for_process() {
     agent_name_from_args "${_AP_ARGS[$pid]:-}"
 }
 
+# Print the Unix time at which a process started, read from the kernel's own
+# record: boot time plus the start offset in /proc/<pid>/stat.
+#
+# Do not use the mtime of the /proc/<pid> directory for this. That is the time
+# the kernel created the procfs inode, not the time the process started. It
+# resets whenever the inode is evicted and looked up again, and each procfs
+# instance has its own copy -- a sandboxed systemd service therefore sees a
+# much later "start" than a login shell does for the same long-lived process.
+#
+# Returns 1 when the start time cannot be determined (non-Linux, a process that
+# already exited, or a restricted procfs).
+agent_process_start_epoch() {
+    local pid="$1"
+    local proc_root="${2:-/proc}"
+    local stat_file="$proc_root/$pid/stat"
+    local boot_file="$proc_root/stat"
+    local stat_line key value boot_time="" start_ticks ticks_per_second
+    local -a fields
+
+    [ -r "$stat_file" ] && [ -r "$boot_file" ] || return 1
+
+    IFS= read -r stat_line < "$stat_file" || [ -n "$stat_line" ] || return 1
+    # The command name is wrapped in parentheses and may itself contain spaces
+    # or parentheses, so count fields from after the final ")". The state is
+    # then field 3 and starttime (field 22) is the twentieth remaining field.
+    read -r -a fields <<< "${stat_line##*) }"
+    start_ticks="${fields[19]:-}"
+    [[ "$start_ticks" =~ ^[0-9]+$ ]] || return 1
+
+    while read -r key value _; do
+        if [ "$key" = "btime" ]; then
+            boot_time="$value"
+            break
+        fi
+    done < "$boot_file"
+    [[ "$boot_time" =~ ^[0-9]+$ ]] || return 1
+
+    ticks_per_second=$(getconf CLK_TCK 2>/dev/null || true)
+    [[ "$ticks_per_second" =~ ^[1-9][0-9]*$ ]] || ticks_per_second=100
+
+    printf '%s\n' "$(( boot_time + start_ticks / ticks_per_second ))"
+}
+
 find_matching_descendant_pid() {
     local root_pid="$1"
     local pattern="${2:-claude|codex|devin}"
