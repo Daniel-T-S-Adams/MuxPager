@@ -30,6 +30,20 @@ assert_eq() {
     fi
 }
 
+# tmux reads a pane's path from its child process. That process has not always
+# changed into its start directory by the time the session-creating command
+# returns, so wait for the path to settle instead of sampling it once.
+assert_pane_path() {
+    local session="$1" expected="$2" message="$3" actual="" _attempt
+    for _attempt in $(seq 1 50); do
+        actual="$(tmux_test list-panes -t "=$session" \
+            -F '#{pane_current_path}' 2>/dev/null || true)"
+        [ "$actual" = "$expected" ] && return 0
+        sleep 0.1
+    done
+    assert_eq "$actual" "$expected" "$message"
+}
+
 REPO="$TEST_ROOT/repo with spaces"
 mkdir -p "$REPO/src/api"
 git -C "$REPO" init -q
@@ -59,8 +73,7 @@ fi
 
 EXPECTED_WORKTREE="$REPO/.muxpager/worktrees/feature-one"
 EXPECTED_CWD="$EXPECTED_WORKTREE/src/api"
-assert_eq \
-    "$(tmux_test list-panes -t '=Feature_One' -F '#{pane_current_path}')" \
+assert_pane_path Feature_One \
     "$EXPECTED_CWD" \
     "the new session should preserve the source subdirectory inside its worktree"
 assert_eq \
@@ -97,8 +110,7 @@ tmux_test set-option -t "$PROMPT_SESSION:" \
     @muxpager-new-session-cwd "$REPO/src/api"
 tmux_test kill-pane -t "$STALE_PANE"
 run_new_session --source-session "$PROMPT_SESSION" >/dev/null
-assert_eq \
-    "$(tmux_test list-panes -t '=Session_Handoff' -F '#{pane_current_path}')" \
+assert_pane_path Session_Handoff \
     "$REPO/.muxpager/worktrees/session-handoff/src/api" \
     "session handoff should survive deletion of the pane that opened the prompt"
 assert_eq \
@@ -113,8 +125,7 @@ assert_eq \
 # Creating from an existing linked worktree still places the new worktree under
 # the primary checkout rather than nesting managed directories recursively.
 run_new_session --name from-worktree --cwd "$EXPECTED_CWD" >/dev/null
-assert_eq \
-    "$(tmux_test list-panes -t '=from-worktree' -F '#{pane_current_path}')" \
+assert_pane_path from-worktree \
     "$REPO/.muxpager/worktrees/from-worktree/src/api" \
     "sessions created from worktrees should reuse the primary checkout's managed root"
 
@@ -130,8 +141,7 @@ assert_eq \
 PLAIN_DIR="$TEST_ROOT/plain directory"
 mkdir -p "$PLAIN_DIR"
 plain_output="$(run_new_session --name plain-session --cwd "$PLAIN_DIR")"
-assert_eq \
-    "$(tmux_test list-panes -t '=plain-session' -F '#{pane_current_path}')" \
+assert_pane_path plain-session \
     "$PLAIN_DIR" \
     "non-Git sessions should start in the requested directory"
 case "$plain_output" in
