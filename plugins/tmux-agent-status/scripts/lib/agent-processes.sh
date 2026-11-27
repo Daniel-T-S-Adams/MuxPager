@@ -107,6 +107,18 @@ agent_name_from_args() {
             ;;
     esac
 
+    # Claude Code's native installer stores each release as
+    # .../claude/versions/<version> behind a `claude` symlink. A process started
+    # through the resolved path has the version number as its basename.
+    case "$executable" in
+        */claude/versions/*)
+            if [ "${executable%/*}" != "${executable%/claude/versions/*}/claude/versions" ]; then
+                return 1
+            fi
+            candidate="claude"
+            ;;
+    esac
+
     case "$candidate" in
         claude|codex|devin) echo "$candidate" ;;
         *) return 1 ;;

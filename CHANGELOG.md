@@ -53,6 +53,11 @@ All notable changes to MuxPager are documented here. The project uses
   `/proc/<pid>`, which inside the bridge's systemd sandbox is far later than
   the real start, so the conversation identity looked stale. It now reads the
   true start time from `/proc/<pid>/stat`.
+- `/new` and `/resume` work again with Claude Code's native installer, which
+  links `~/.local/bin/claude` to `.../claude/versions/<version>`. The bridge
+  launched the resolved target, so the process was named after the version
+  number and never recognised as Claude. It now launches the `claude` link,
+  and a process started from the versioned path is detected as Claude too.
 
 ## [0.1.0] - 2026-07-23
 
